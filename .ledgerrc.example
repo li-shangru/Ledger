@@ -1,0 +1,11 @@
+# Optional private defaults. Save as defaults.toml inside LEDGER_HOME.
+# Default home on macOS: ~/Library/Application Support/Ledger
+# Keep the real file and all financial state outside every source checkout.
+# CLI --db overrides LEDGER_DB, which overrides this file's db value.
+# Omit db to use ledger.db within the selected runtime home.
+[defaults]
+# db = "/absolute/private/runtime/ledger.db"
+# src = "/absolute/private/runtime/csv"
+# out_dir = "/absolute/private/runtime/exports"
+formats = "none"
+log_level = "INFO"

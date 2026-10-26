@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+ensure_python_env ui
+
+DB="$("$VENV_PY" -m ledger.runtime ledger.db)"
+PORT="${PORT:-8501}"
+
+export LEDGER_DB="$DB"
+
+cd "$ROOT"
+# Bind to loopback only and disable usage-stats telemetry: this dashboard
+# renders raw financial data and must never be reachable on the LAN or report
+# usage. The committed .streamlit/config.toml sets the same defaults; these
+# flags make them explicit and independent of the user's global config.
+exec "$VENV_PY" -m streamlit run streamlit_app.py \
+  --server.port "$PORT" \
+  --server.address 127.0.0.1 \
+  --server.headless true \
+  --browser.gatherUsageStats false \
+  "$@"

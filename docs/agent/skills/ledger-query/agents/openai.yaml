@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ledger Transaction Facts"
+  short_description: "Query exact imported transaction facts safely"
+  default_prompt: "Use $ledger-query to answer an exact transaction-derived question with Ledger evidence and honest coverage."

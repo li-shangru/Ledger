@@ -1,0 +1,283 @@
+{
+  "schema_version": 2,
+  "factory_id": "ledger",
+  "max_advisors": 3,
+  "routing": {
+    "risk_aliases": {
+      "currency-boundaries": "currency",
+      "numeric-precision": "exact-arithmetic",
+      "source-completeness": "source-coverage",
+      "read-only-mcp": "read-only",
+      "atomic-publication": "publication",
+      "rollback-recovery": "recovery",
+      "statement-parsing": "statement-ingestion"
+    },
+    "weak_terms": [
+      "backup",
+      "coverage",
+      "evidence",
+      "unavailable"
+    ],
+    "whole_hyphen_tokens": true,
+    "infer_text_risks": true
+  },
+  "roles": [
+    {
+      "id": "coordinator",
+      "version": "1.0.0",
+      "content": "docs/agent/factory/roles/coordinator.md"
+    },
+    {
+      "id": "implementer",
+      "version": "1.0.0",
+      "content": "docs/agent/factory/roles/implementer.md"
+    },
+    {
+      "id": "adviser",
+      "version": "1.0.0",
+      "content": "docs/agent/factory/roles/adviser.md"
+    },
+    {
+      "id": "reviewer",
+      "version": "1.0.0",
+      "content": "docs/agent/factory/roles/reviewer.md"
+    }
+  ],
+  "knowledge": [
+    {
+      "id": "statement-ingestion",
+      "description": "Statement extraction, row completeness, source identity, reconciliation and staging.",
+      "paths": [
+        "src/ledger/parsers",
+        "src/ledger/processing",
+        "src/ledger/imports/pdf/statement_pdf_to_csv",
+        "src/ledger/imports/pdf/workflow.py",
+        "src/ledger/investments"
+      ],
+      "risks": [
+        "statement-ingestion",
+        "reconciliation",
+        "source-identity"
+      ],
+      "sources": [
+        "src/ledger/processing/pipeline.py",
+        "src/ledger/imports/pdf/workflow.py",
+        "src/ledger/adapters/contracts.py",
+        "tests/test_dedup_collision.py",
+        "tests/test_generic_investment_adapter.py",
+        "tests/test_precise_statement_coverage.py"
+      ],
+      "version": "1.0.0",
+      "content": "docs/agent/factory/knowledge/statement-ingestion.md",
+      "terms": [
+        "statement parsing",
+        "pdf extraction",
+        "reconciliation",
+        "txn_id",
+        "deduplication",
+        "institution format",
+        "source drift",
+        "账单解析",
+        "对账",
+        "解析完整性"
+      ],
+      "retrieval_triggers": [
+        "Statement parsing, extraction, reconciliation or row identity changes.",
+        "Printed coverage, institution format or parser-to-finalize integration changes."
+      ]
+    },
+    {
+      "id": "exact-arithmetic",
+      "description": "Finite Decimal arithmetic, explicit currency/sign policy, monetary cents and investment fixed-point precision.",
+      "paths": [
+        "src/ledger/utils/money.py",
+        "src/ledger/storage/exact_decimal.py",
+        "src/ledger/finance_policy.py",
+        "src/ledger/query/aggregates.py",
+        "src/ledger/query/investments.py",
+        "src/ledger/adapters/contracts.py",
+        "src/ledger/query/agent.py"
+      ],
+      "risks": [
+        "exact-arithmetic",
+        "currency",
+        "numeric-storage"
+      ],
+      "sources": [
+        "src/ledger/storage/exact_decimal.py",
+        "src/ledger/utils/money.py",
+        "src/ledger/finance_policy.py",
+        "src/ledger/query/agent.py",
+        "tests/test_investment_storage.py",
+        "tests/test_aggregate_precision.py",
+        "tests/test_money_decimal_invariant.py",
+        "src/ledger/query/investments.py",
+        "tests/test_decimal_context_public.py"
+      ],
+      "version": "1.0.0",
+      "content": "docs/agent/factory/knowledge/exact-arithmetic.md",
+      "terms": [
+        "decimal",
+        "rounding",
+        "precision",
+        "fixed point",
+        "money aggregation",
+        "exact decimal",
+        "quantity",
+        "fx",
+        "exact arithmetic",
+        "native currency",
+        "小数精度",
+        "精确金额",
+        "币种"
+      ],
+      "retrieval_triggers": [
+        "Represented Decimal values or cent conversion change.",
+        "Transaction totals/groups, native currency, investment scale or numeric persistence change."
+      ]
+    },
+    {
+      "id": "query-provenance",
+      "description": "Bounded read-only queries, imported evidence coverage, opaque references and cursor/snapshot identity.",
+      "paths": [
+        "src/ledger/query",
+        "src/ledger/mcp",
+        "src/ledger/storage/read_only.py"
+      ],
+      "risks": [
+        "source-coverage",
+        "query-provenance",
+        "read-only",
+        "privacy",
+        "pagination"
+      ],
+      "sources": [
+        "src/ledger/query/agent.py",
+        "src/ledger/mcp/investments.py",
+        "src/ledger/storage/read_only.py",
+        "tests/test_mcp_read_only.py",
+        "tests/test_mcp_investment_details.py",
+        "tests/test_precise_statement_coverage.py",
+        "tests/test_snapshot_generation.py"
+      ],
+      "version": "1.0.0",
+      "content": "docs/agent/factory/knowledge/query-provenance.md",
+      "terms": [
+        "coverage",
+        "evidence",
+        "provenance",
+        "statement_ref",
+        "account_ref",
+        "cursor",
+        "pagination",
+        "snapshot generation",
+        "read-only mcp",
+        "unavailable",
+        "来源覆盖",
+        "来源证据",
+        "分页",
+        "只读查询"
+      ],
+      "retrieval_triggers": [
+        "Query output, source coverage, opaque references or paging changes.",
+        "Read-only access, snapshot identity, unavailable evidence or error disclosure changes."
+      ]
+    },
+    {
+      "id": "publication-recovery",
+      "description": "Local database publication, lock/identity boundaries, backup, durable manifests and idempotent recovery.",
+      "paths": [
+        "src/ledger/storage/snapshots.py",
+        "src/ledger/utils/private_files.py",
+        "src/ledger/imports/pdf/readiness.py",
+        "src/ledger/imports/pdf/workflow.py",
+        "src/ledger/investments/workflow.py",
+        "src/ledger/proposals",
+        "src/ledger/repair"
+      ],
+      "risks": [
+        "publication",
+        "recovery",
+        "approval",
+        "file-identity"
+      ],
+      "sources": [
+        "src/ledger/storage/snapshots.py",
+        "src/ledger/imports/pdf/readiness.py",
+        "src/ledger/imports/pdf/workflow.py",
+        "tests/test_finalize_state_machine.py",
+        "tests/test_journal_recovery.py",
+        "tests/test_private_artifact_publication.py"
+      ],
+      "version": "1.0.0",
+      "content": "docs/agent/factory/knowledge/publication-recovery.md",
+      "terms": [
+        "atomic publication",
+        "finalize",
+        "promote",
+        "rollback journal",
+        "recovery",
+        "open import",
+        "manifest",
+        "pinned identity",
+        "sidecar",
+        "backup",
+        "crash",
+        "idempotency",
+        "原子发布",
+        "崩溃恢复",
+        "回滚日志"
+      ],
+      "retrieval_triggers": [
+        "Approval, finalize, backup, manifest, atomic replacement or retry changes.",
+        "Target identity, sidecars, write exclusion or journal recovery changes."
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "statement-ingestion",
+      "version": "2.0.0",
+      "profile": "docs/agent/factory/profiles/statement-ingestion.md",
+      "permissions": "advisory-read-only",
+      "role": "adviser",
+      "knowledge_packs": [
+        "statement-ingestion"
+      ],
+      "question_template": "Which row-identity, completeness or printed-period boundary in this task could preserve totals while losing source evidence?"
+    },
+    {
+      "id": "exact-arithmetic",
+      "version": "2.0.0",
+      "profile": "docs/agent/factory/profiles/exact-arithmetic.md",
+      "permissions": "advisory-read-only",
+      "role": "adviser",
+      "knowledge_packs": [
+        "exact-arithmetic"
+      ],
+      "question_template": "Which context, scale, sign or currency boundary in this task needs an independent exact-value oracle?"
+    },
+    {
+      "id": "query-provenance",
+      "version": "2.0.0",
+      "profile": "docs/agent/factory/profiles/query-provenance.md",
+      "permissions": "advisory-read-only",
+      "role": "adviser",
+      "knowledge_packs": [
+        "query-provenance"
+      ],
+      "question_template": "Which source-coverage, null, cursor or read-only boundary in this task could make the reported evidence misleading?"
+    },
+    {
+      "id": "publication-recovery",
+      "version": "2.0.0",
+      "profile": "docs/agent/factory/profiles/publication-recovery.md",
+      "permissions": "advisory-read-only",
+      "role": "adviser",
+      "knowledge_packs": [
+        "publication-recovery"
+      ],
+      "question_template": "Which approval, target-identity or interrupted publication transition in this task could publish or recover incorrectly?"
+    }
+  ]
+}

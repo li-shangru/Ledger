@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DELIVERY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+exec "$DELIVERY_ROOT/.venv/bin/python" -I "$DELIVERY_ROOT/scripts/ledger_delivery.py" check "$@"

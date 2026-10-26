@@ -1,0 +1,9 @@
+# Committed security floor for the local financial dashboard.
+# Overridable via CLI flags / env, but the safe defaults live here so a bare
+# `streamlit run` never LAN-exposes the dashboard or phones home usage stats.
+[browser]
+gatherUsageStats = false
+
+[server]
+address = "127.0.0.1"
+headless = true

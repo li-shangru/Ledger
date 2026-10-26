@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.32,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fictional-ledger-adapter"
+version = "0.1.0"
+description = "Independently invented CSV example for Ledger adapter API 1"
+requires-python = ">=3.14,<3.15"
+dependencies = ["ledger>=1.10,<2"]
+
+[project.entry-points."ledger.import_adapters.v1"]
+fictional = "fictional_ledger_adapter:create_adapter"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fictional_ledger_adapter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

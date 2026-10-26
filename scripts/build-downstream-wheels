@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT_DIR="${1:-${LEDGER_WHEEL_DIR:-$ROOT/.ledger-downstream-wheels}}"
+PYTHON_BIN="${LEDGER_PYTHON:-python3.14}"
+SOURCE_DATE_EPOCH=1700000000
+
+STREAMLIT_SOURCE="streamlit-1.66.1-py3-none-any.whl"
+STREAMLIT_OUTPUT="$STREAMLIT_SOURCE"
+STREAMLIT_URL="https://files.pythonhosted.org/packages/4a/eb/f12286b0b5c30e3fd8e45ca47f05a6cd14cb6e583d04ef4409974a17d371/$STREAMLIT_SOURCE"
+STREAMLIT_SOURCE_SHA="29607190a589fe1fa9bd7e154635d335d47dc09b4010c6cc273daa6e4430ee31"
+STREAMLIT_OUTPUT_SHA="$STREAMLIT_SOURCE_SHA"
+
+PLAYWRIGHT_SOURCE="playwright-1.62.0-py3-none-macosx_11_0_arm64.whl"
+PLAYWRIGHT_OUTPUT="playwright-1.62.0+ledger.1-py3-none-macosx_26_0_arm64.whl"
+PLAYWRIGHT_URL="https://files.pythonhosted.org/packages/af/1a/0bfbe9904350961f4dbb713f04342e40d548c5fc26c8157bd13617c81492/$PLAYWRIGHT_SOURCE"
+PLAYWRIGHT_SOURCE_SHA="db755ab27db21a04186f1fe8169888e42356086e439b1059b923ef417f0b6034"
+PLAYWRIGHT_OUTPUT_SHA="3c9c9e0ce4ece2ade7d611735327877a7a32234a2cc7b4ab5403768d66ade04a"
+
+sha256() {
+  "$PYTHON_BIN" - "$1" <<'PY'
+from hashlib import sha256
+from pathlib import Path
+import sys
+
+digest = sha256(Path(sys.argv[1]).read_bytes()).hexdigest()
+print(digest)
+PY
+}
+
+require_existing_artifact_identity() {
+  local artifact="$1"
+  local expected="$2"
+  if [[ -e "$OUTPUT_DIR/$artifact" || -L "$OUTPUT_DIR/$artifact" ]]; then
+    if [[ ! -f "$OUTPUT_DIR/$artifact" || -L "$OUTPUT_DIR/$artifact" || \
+      "$(sha256 "$OUTPUT_DIR/$artifact")" != "$expected" ]]; then
+      echo "Refusing to replace an existing runtime artifact: $artifact" >&2
+      exit 1
+    fi
+  fi
+}
+
+require_existing_artifact_identity "$STREAMLIT_OUTPUT" "$STREAMLIT_OUTPUT_SHA"
+require_existing_artifact_identity "$PLAYWRIGHT_OUTPUT" "$PLAYWRIGHT_OUTPUT_SHA"
+
+artifacts_are_current() {
+  [[ -f "$OUTPUT_DIR/$STREAMLIT_OUTPUT" ]] || return 1
+  [[ -f "$OUTPUT_DIR/$PLAYWRIGHT_OUTPUT" ]] || return 1
+  [[ "$(sha256 "$OUTPUT_DIR/$STREAMLIT_OUTPUT")" == "$STREAMLIT_OUTPUT_SHA" ]] || return 1
+  [[ "$(sha256 "$OUTPUT_DIR/$PLAYWRIGHT_OUTPUT")" == "$PLAYWRIGHT_OUTPUT_SHA" ]] || return 1
+}
+
+if artifacts_are_current; then
+  echo "downstream-wheel-build: verified existing deterministic artifacts in $OUTPUT_DIR"
+  exit 0
+fi
+
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "The canonical Playwright derivative is locked to macOS arm64." >&2
+  exit 2
+fi
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 14))'; then
+  echo "The downstream wheel builder requires Python 3.14." >&2
+  exit 2
+fi
+
+BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ledger-downstream-wheels.XXXXXX")"
+SOURCE_DIR="$BUILD_ROOT/source"
+UNPACK_DIR="$BUILD_ROOT/unpacked"
+DIST_DIR="$BUILD_ROOT/dist"
+VERIFY_DIR="$BUILD_ROOT/verify"
+mkdir -p "$SOURCE_DIR" "$UNPACK_DIR" "$DIST_DIR"
+cleanup() {
+  if [[ -n "$BUILD_ROOT" && "$(basename "$BUILD_ROOT")" == ledger-downstream-wheels.* ]]; then
+    rm -rf -- "$BUILD_ROOT"
+  fi
+}
+trap cleanup EXIT
+
+"$PYTHON_BIN" -m venv "$BUILD_ROOT/build-venv"
+BUILD_PY="$BUILD_ROOT/build-venv/bin/python"
+"$BUILD_PY" -m pip download --disable-pip-version-check --only-binary=:all: --no-deps \
+  --dest "$SOURCE_DIR" 'wheel==0.48.0' 'packaging==26.3'
+[[ "$(sha256 "$SOURCE_DIR/wheel-0.48.0-py3-none-any.whl")" == \
+  "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab" ]]
+[[ "$(sha256 "$SOURCE_DIR/packaging-26.3-py3-none-any.whl")" == \
+  "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c" ]]
+"$BUILD_PY" -m pip install --disable-pip-version-check --no-index \
+  --find-links "$SOURCE_DIR" 'wheel==0.48.0' 'packaging==26.3'
+BUILD_PY="$BUILD_ROOT/build-venv/bin/python"
+
+curl --fail --location --proto '=https' --tlsv1.2 "$STREAMLIT_URL" \
+  --output "$SOURCE_DIR/$STREAMLIT_SOURCE"
+curl --fail --location --proto '=https' --tlsv1.2 "$PLAYWRIGHT_URL" \
+  --output "$SOURCE_DIR/$PLAYWRIGHT_SOURCE"
+
+[[ "$(sha256 "$SOURCE_DIR/$STREAMLIT_SOURCE")" == "$STREAMLIT_SOURCE_SHA" ]]
+[[ "$(sha256 "$SOURCE_DIR/$PLAYWRIGHT_SOURCE")" == "$PLAYWRIGHT_SOURCE_SHA" ]]
+
+cd "$UNPACK_DIR"
+# Streamlit is the byte-identical official release; only Playwright is repacked.
+cp "$SOURCE_DIR/$STREAMLIT_SOURCE" "$DIST_DIR/$STREAMLIT_OUTPUT"
+
+"$BUILD_PY" -m wheel unpack "$SOURCE_DIR/$PLAYWRIGHT_SOURCE"
+# cp -pR is load-bearing: it preserves native-driver and WHEEL modes in the reference build.
+cp -pR playwright-1.62.0 playwright-ledger
+mv playwright-ledger/playwright-1.62.0.dist-info \
+  playwright-ledger/playwright-1.62.0+ledger.1.dist-info
+"$BUILD_PY" - \
+  playwright-ledger/playwright-1.62.0+ledger.1.dist-info/METADATA \
+  playwright-ledger/playwright-1.62.0+ledger.1.dist-info/WHEEL <<'PY'
+from pathlib import Path
+import sys
+
+metadata = Path(sys.argv[1])
+wheel = Path(sys.argv[2])
+metadata_content = metadata.read_text(encoding="utf-8")
+replacements = {
+    "Version: 1.62.0": "Version: 1.62.0+ledger.1",
+    "Requires-Dist: pyee<14,>=13": "Requires-Dist: pyee<15,>=14",
+}
+for old, new in replacements.items():
+    if metadata_content.count(old) != 1 or metadata_content.count(new) != 0:
+        raise SystemExit(f"unexpected Playwright METADATA occurrence count: {old!r}")
+    metadata_content = metadata_content.replace(old, new)
+for old, new in replacements.items():
+    lines = metadata_content.splitlines()
+    if lines.count(old) != 0 or lines.count(new) != 1:
+        raise SystemExit(f"failed Playwright METADATA replacement: {new!r}")
+metadata.write_text(metadata_content, encoding="utf-8")
+
+wheel_content = wheel.read_text(encoding="utf-8")
+old_tag = "Tag: py3-none-any"
+new_tag = "Tag: py3-none-macosx_26_0_arm64"
+if wheel_content.count(old_tag) != 1 or wheel_content.count(new_tag) != 0:
+    raise SystemExit("unexpected Playwright WHEEL tag occurrence count")
+wheel.write_text(wheel_content.replace(old_tag, new_tag), encoding="utf-8")
+if wheel.read_text(encoding="utf-8").count(new_tag) != 1:
+    raise SystemExit("failed Playwright WHEEL tag replacement")
+PY
+[[ -x playwright-ledger/playwright/driver/node ]]
+NODE_BUILD="$(xcrun vtool -show-build playwright-ledger/playwright/driver/node)"
+NODE_MINOS="$(awk '$1 == "minos" {print $2; exit}' <<<"$NODE_BUILD")"
+"$BUILD_PY" - "$NODE_MINOS" <<'PY'
+from packaging.version import Version
+import sys
+
+native_minos = sys.argv[1]
+if native_minos != "13.5":
+    raise SystemExit(f"unexpected Playwright Node minimum macOS version: {native_minos!r}")
+if Version(native_minos) > Version("26.0"):
+    raise SystemExit("Playwright Node minimum exceeds the declared macOS 26 wheel floor")
+PY
+SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" "$BUILD_PY" -m wheel pack \
+  --dest-dir "$DIST_DIR" playwright-ledger
+
+"$BUILD_PY" -m zipfile --test "$DIST_DIR/$STREAMLIT_OUTPUT"
+"$BUILD_PY" -m zipfile --test "$DIST_DIR/$PLAYWRIGHT_OUTPUT"
+[[ "$(sha256 "$DIST_DIR/$STREAMLIT_OUTPUT")" == "$STREAMLIT_OUTPUT_SHA" ]]
+[[ "$(sha256 "$DIST_DIR/$PLAYWRIGHT_OUTPUT")" == "$PLAYWRIGHT_OUTPUT_SHA" ]]
+
+"$BUILD_PY" - \
+  "$SOURCE_DIR/$STREAMLIT_SOURCE" "$DIST_DIR/$STREAMLIT_OUTPUT" \
+  "$SOURCE_DIR/$PLAYWRIGHT_SOURCE" "$DIST_DIR/$PLAYWRIGHT_OUTPUT" <<'PY'
+from __future__ import annotations
+
+import stat
+import sys
+from pathlib import Path, PurePosixPath
+from zipfile import ZipFile
+
+
+def logical_payload(path: str, *, allowed_dist_info: set[str]) -> dict[str, bytes]:
+    payload: dict[str, bytes] = {}
+    with ZipFile(path) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            item = PurePosixPath(info.filename)
+            parts = list(item.parts)
+            for index, part in enumerate(parts):
+                if part.endswith(".dist-info"):
+                    parts[index] = "DIST-INFO"
+                    break
+            logical = "/".join(parts)
+            if any(logical.endswith(f"DIST-INFO/{name}") for name in allowed_dist_info):
+                continue
+            payload[logical] = archive.read(info)
+    return payload
+
+
+streamlit_upstream, streamlit_local, playwright_upstream, playwright_local = sys.argv[1:]
+if Path(streamlit_upstream).read_bytes() != Path(streamlit_local).read_bytes():
+    raise SystemExit("Streamlit must remain byte-identical to the official upstream wheel")
+playwright_before = logical_payload(
+    playwright_upstream, allowed_dist_info={"METADATA", "WHEEL", "RECORD"}
+)
+playwright_after = logical_payload(
+    playwright_local, allowed_dist_info={"METADATA", "WHEEL", "RECORD"}
+)
+if playwright_before != playwright_after:
+    missing = sorted(playwright_before.keys() - playwright_after.keys())
+    added = sorted(playwright_after.keys() - playwright_before.keys())
+    changed = sorted(
+        name
+        for name in playwright_before.keys() & playwright_after.keys()
+        if playwright_before[name] != playwright_after[name]
+    )
+    raise SystemExit(
+        "Playwright payload differs outside intended metadata, WHEEL, and RECORD: "
+        f"missing={missing}, added={added}, changed={changed}"
+    )
+
+with ZipFile(streamlit_local) as archive:
+    metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+    metadata = archive.read(metadata_name).decode()
+    if "License-Expression: Apache-2.0" not in metadata:
+        raise SystemExit("Streamlit Apache-2.0 declaration was not preserved")
+with ZipFile(playwright_local) as archive:
+    names = archive.namelist()
+    license_names = [name for name in names if "license" in name.lower() or "notice" in name.lower()]
+    if not license_names:
+        raise SystemExit("Playwright license and notice files were not preserved")
+    node = archive.getinfo("playwright/driver/node")
+    if not stat.S_IMODE(node.external_attr >> 16) & stat.S_IXUSR:
+        raise SystemExit("Playwright native driver is not executable")
+PY
+
+"$PYTHON_BIN" -m venv "$VERIFY_DIR"
+"$VERIFY_DIR/bin/python" -m pip install --disable-pip-version-check --no-index \
+  --find-links "$DIST_DIR" --no-deps \
+  'streamlit==1.66.1' 'playwright==1.62.0+ledger.1'
+"$VERIFY_DIR/bin/python" - <<'PY'
+from importlib.metadata import distribution, version
+
+assert version("streamlit") == "1.66.1"
+assert version("playwright") == "1.62.0+ledger.1"
+entry_points = {
+    point.name
+    for name in ("streamlit", "playwright")
+    for point in distribution(name).entry_points
+    if point.group == "console_scripts"
+}
+assert {"streamlit", "playwright"} <= entry_points
+PY
+
+mkdir -p "$OUTPUT_DIR"
+for artifact in "$STREAMLIT_OUTPUT" "$PLAYWRIGHT_OUTPUT"; do
+  if [[ -e "$OUTPUT_DIR/$artifact" || -L "$OUTPUT_DIR/$artifact" ]]; then
+    if [[ -L "$OUTPUT_DIR/$artifact" || \
+      "$(sha256 "$OUTPUT_DIR/$artifact")" != "$(sha256 "$DIST_DIR/$artifact")" ]]; then
+      echo "Refusing to replace an existing runtime artifact: $artifact" >&2
+      exit 1
+    fi
+    continue
+  fi
+  temporary="$OUTPUT_DIR/.$artifact.tmp"
+  cp "$DIST_DIR/$artifact" "$temporary"
+  chmod 0600 "$temporary"
+  mv -n "$temporary" "$OUTPUT_DIR/$artifact"
+done
+
+artifacts_are_current
+echo "downstream-wheel-build: reproduced and verified $STREAMLIT_OUTPUT"
+echo "downstream-wheel-build: reproduced and verified $PLAYWRIGHT_OUTPUT"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ledger PDF Import"
+  short_description: "Import PDFs or manage existing Ledger runs"
+  default_prompt: "Use $ledger-pdf-import for the requested Ledger PDF import operation; inspect status before managing an existing run."

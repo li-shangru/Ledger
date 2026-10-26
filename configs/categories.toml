@@ -1,0 +1,80 @@
+# Small general-purpose taxonomy with fictional demonstration merchants.
+version = "v1-public"
+default_category = "Other"
+
+[[category]]
+category_norm = "Food & Dining"
+merchants = []
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Groceries"
+parent = "Food & Dining"
+merchants = ["MERCHANT_001"]
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Restaurants & Dining"
+parent = "Food & Dining"
+merchants = ["MERCHANT_002"]
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Transportation"
+merchants = ["MERCHANT_003"]
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Housing"
+merchants = ["MERCHANT_004"]
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Utilities"
+merchants = ["MERCHANT_005"]
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Subscriptions"
+merchants = ["MERCHANT_006"]
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Health"
+merchants = []
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Shopping"
+merchants = []
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Education"
+merchants = []
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Fees"
+merchants = []
+exclude_from_spend_metrics = false
+
+[[category]]
+category_norm = "Income (Excluded)"
+merchants = ["MERCHANT_007"]
+exclude_from_spend_metrics = true
+
+[[category]]
+category_norm = "Transfers (Excluded)"
+merchants = ["MERCHANT_008"]
+exclude_from_spend_metrics = true
+
+[[category]]
+category_norm = "Adjustments (Excluded)"
+merchants = []
+exclude_from_spend_metrics = true
+
+[[category]]
+category_norm = "Other"
+merchants = []
+exclude_from_spend_metrics = false

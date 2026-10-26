@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+ensure_python_env core
+
+cd "$ROOT"
+
+DB="$("$VENV_PY" -m ledger.runtime ledger.db)"
+PDF_DIR="${LEDGER_AUDIT_PDF_DIR:-$("$VENV_PY" -m ledger.runtime processed)}"
+START="${LEDGER_AUDIT_START:-2025-01-01}"
+END="${LEDGER_AUDIT_END:-$(date +%Y-%m-%d)}"
+RUNS_DIR="${LEDGER_AUDIT_RUNS_DIR:-$("$VENV_PY" -m ledger.runtime audit-runs)}"
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  exec "$VENV_PY" -m ledger.cli audit statements --help
+fi
+
+exec "$VENV_PY" -m ledger.cli audit statements \
+  --db "$DB" \
+  --pdf-dir "$PDF_DIR" \
+  --start "$START" \
+  --end "$END" \
+  --audit-runs-dir "$RUNS_DIR" \
+  --fail-on-issues \
+  "$@"

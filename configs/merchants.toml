@@ -1,0 +1,42 @@
+# Independently authored fictional seeds; no account or spending history.
+version = "v1-public"
+
+[[rule]]
+merchant_norm = "MERCHANT_001"
+category = "Groceries"
+patterns = ["(?i)\\bMERCHANT_001\\b"]
+
+[[rule]]
+merchant_norm = "MERCHANT_002"
+category = "Restaurants & Dining"
+patterns = ["(?i)\\bMERCHANT_002\\b"]
+
+[[rule]]
+merchant_norm = "MERCHANT_003"
+category = "Transportation"
+patterns = ["(?i)\\bMERCHANT_003\\b"]
+
+[[rule]]
+merchant_norm = "MERCHANT_004"
+category = "Housing"
+patterns = ["(?i)\\bMERCHANT_004\\b"]
+
+[[rule]]
+merchant_norm = "MERCHANT_005"
+category = "Utilities"
+patterns = ["(?i)\\bMERCHANT_005\\b"]
+
+[[rule]]
+merchant_norm = "MERCHANT_006"
+category = "Subscriptions"
+patterns = ["(?i)\\bMERCHANT_006\\b"]
+
+[[rule]]
+merchant_norm = "MERCHANT_007"
+category = "Income (Excluded)"
+patterns = ["(?i)\\bMERCHANT_007\\b"]
+
+[[rule]]
+merchant_norm = "MERCHANT_008"
+category = "Transfers (Excluded)"
+patterns = ["(?i)\\bMERCHANT_008\\b"]

@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Run ALL freeze gates, collect each exit code, then print a summary table.
+# Exits non-zero if any gate failed.
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+ensure_python_env full-dev
+cd "$ROOT"
+
+LEDGER_FREEZE_SYNTHETIC="${LEDGER_FREEZE_SYNTHETIC:-1}"
+LEDGER_FREEZE_SOURCE_ONLY="${LEDGER_FREEZE_SOURCE_ONLY:-1}"
+
+SYNTHETIC_ROOT=""
+SYNTHETIC_MARKER=""
+
+cleanup_synthetic_freeze() {
+  if [[
+    -n "$SYNTHETIC_ROOT" &&
+    "$(basename "$SYNTHETIC_ROOT")" == ledger-freeze.* &&
+    -f "$SYNTHETIC_MARKER"
+  ]]; then
+    rm -rf -- "$SYNTHETIC_ROOT"
+  fi
+}
+
+if [[ "${LEDGER_FREEZE_SYNTHETIC:-0}" == "1" ]]; then
+  if [[ "${LEDGER_FREEZE_AUDIT:-0}" == "1" ]]; then
+    echo "LEDGER_FREEZE_SYNTHETIC=1 cannot be combined with the source statement audit." >&2
+    exit 2
+  fi
+  SYNTHETIC_TEMP_BASE="${TMPDIR:-/tmp}"
+  SYNTHETIC_TEMP_BASE="${SYNTHETIC_TEMP_BASE%/}"
+  SYNTHETIC_ROOT="$(mktemp -d "$SYNTHETIC_TEMP_BASE/ledger-freeze.XXXXXX")"
+  SYNTHETIC_ROOT="$(cd "$SYNTHETIC_ROOT" && pwd -P)"
+  chmod 0700 "$SYNTHETIC_ROOT"
+  export LEDGER_ADAPTER_CONFIG="$SYNTHETIC_ROOT/no-adapters.json"
+  SYNTHETIC_MARKER="$SYNTHETIC_ROOT/.ledger-synthetic-freeze"
+  touch "$SYNTHETIC_MARKER"
+  chmod 0600 "$SYNTHETIC_MARKER"
+  trap cleanup_synthetic_freeze EXIT
+  DB="$SYNTHETIC_ROOT/ledger.db"
+  if ! PYTHONPATH="$ROOT/tests${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PY" - "$DB" <<'PY'
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+import sys
+
+from ledger.insights import InsightEngine
+from ledger.planning.schedules import ScheduleDraft, ScheduleService
+from mcp_synthetic import (
+    CHEQUING_ACCOUNT_ID,
+    INSIGHT_PRICE_MERCHANT,
+    INSIGHT_PRODUCER_PERIOD_END,
+    INSIGHT_PRODUCER_PERIOD_START,
+    build_insight_producer_database,
+)
+
+path = build_insight_producer_database(Path(sys.argv[1]))
+ScheduleService(path).create(
+    ScheduleDraft(
+        name=INSIGHT_PRICE_MERCHANT,
+        event_type="bill",
+        amount=Decimal("11.00"),
+        currency="CAD",
+        account_id=CHEQUING_ACCOUNT_ID,
+        counterparty_account_id=None,
+        next_date=date(2025, 8, 13),
+        frequency="once",
+        provenance="confirmed",
+    ),
+    schedule_id="ui-reconciliation-smoke",
+)
+InsightEngine(path).refresh_period(
+    INSIGHT_PRODUCER_PERIOD_START,
+    INSIGHT_PRODUCER_PERIOD_END,
+)
+PY
+  then
+    echo "Failed to create the synthetic freeze database." >&2
+    exit 1
+  fi
+  if ! "$VENV_PY" -m ledger.cli config import \
+    --db "$DB" \
+    --source "$ROOT/configs" \
+    --execute; then
+    echo "Failed to seed the synthetic freeze configuration." >&2
+    exit 1
+  fi
+  export LEDGER_DB="$DB"
+  export LEDGER_UI_SMOKE_SCREENSHOTS="$SYNTHETIC_ROOT/ui-smoke"
+  echo "Synthetic freeze database: $DB"
+else
+  DB="$("$VENV_PY" -m ledger.runtime ledger.db)"
+fi
+
+# ── gate runner ──────────────────────────────────────────────────────────────
+# Each call appends one entry to gate_names / gate_codes.
+gate_names=()
+gate_codes=()
+
+run_gate() {
+  local label="$1"
+  shift
+  echo
+  echo "==> $*"
+  # A command in an `if` condition is exempt from inherited errexit. Capture its
+  # status, but always return success so every gate runs and reaches the summary.
+  local code
+  if "$@"; then
+    code=0
+  else
+    code=$?
+  fi
+  gate_names+=("$label")
+  gate_codes+=("$code")
+  return 0
+}
+
+# ── gates ────────────────────────────────────────────────────────────────────
+run_gate "ruff"       "$VENV_PY" -m ruff check src/ledger streamlit_app.py tests scripts/ledger_delivery.py scripts/agent_factory.py scripts/public_source.py scripts/build_backend.py docs/agent/skills/ledger-pdf-import/scripts
+run_gate "ruff-format" "$VENV_PY" -m ruff format --check src/ledger streamlit_app.py tests scripts/ledger_delivery.py scripts/agent_factory.py scripts/public_source.py scripts/build_backend.py docs/agent/skills/ledger-pdf-import/scripts
+run_gate "mypy"       "$VENV_PY" -m mypy --check-untyped-defs src/ledger scripts/ledger_delivery.py
+run_gate "pytest"     "$VENV_PY" -m pytest \
+    -W error::ResourceWarning \
+    -W error::pytest.PytestUnraisableExceptionWarning \
+    --cov=ledger \
+    --cov-report=term-missing
+run_gate "public-source" "$VENV_PY" scripts/public_source.py check --repo "$ROOT"
+run_gate "factory-catalog" "$VENV_PY" scripts/agent_factory.py validate
+run_gate "bash-n"     bash -n scripts/rebuild-db scripts/import-pdf-inbox scripts/import-investment-inbox scripts/run-app scripts/freeze-check scripts/deliver scripts/delivery-check scripts/ui-smoke scripts/audit-statements scripts/build-downstream-wheels scripts/_common.sh scripts/git-hooks/pre-commit
+run_gate "hook-syntax" "$VENV_PY" -c 'import ast; from pathlib import Path; ast.parse(Path("scripts/git-hooks/_is_export_header").read_text())'
+run_gate "db-validate"     "$VENV_PY" -m ledger.cli db validate --db "$DB"
+run_gate "config-validate" "$VENV_PY" -m ledger.cli config validate --db "$DB"
+run_gate "rules-validate"  "$VENV_PY" -m ledger.cli rules validate --db "$DB"
+run_gate "adj-validate"    "$VENV_PY" -m ledger.cli adjustments validate --db "$DB"
+run_gate "reports-list"    "$VENV_PY" -m ledger.cli reports list --db "$DB" --limit 5
+run_gate "lock-consistency" "$VENV_PY" -m ledger.maintenance.lock_check
+run_gate "environment" "$VENV_PY" -m ledger.maintenance.environment_check
+run_gate "pip-check" "$VENV_PY" -m pip check
+run_gate "dependency-audit" "$VENV_PY" -m ledger.maintenance.dependency_audit
+
+if [[ "${LEDGER_FREEZE_UI:-0}" == "1" ]]; then
+  run_gate "ui-smoke" ./scripts/ui-smoke
+fi
+
+if [[ "${LEDGER_FREEZE_AUDIT:-0}" == "1" ]]; then
+  run_gate "audit-statements" ./scripts/audit-statements
+fi
+
+if [[ "${LEDGER_FREEZE_SOURCE_ONLY:-0}" == "1" ]]; then
+  run_gate "source-package" "$VENV_PY" -I "$ROOT/scripts/ledger_delivery.py" source
+else
+  run_gate "delivery" ./scripts/delivery-check
+fi
+
+# ── summary table ─────────────────────────────────────────────────────────────
+echo
+echo "── Freeze-check gate summary ──────────────────────────────────────────"
+any_failed=0
+for i in "${!gate_names[@]}"; do
+  name="${gate_names[$i]}"
+  code="${gate_codes[$i]}"
+  if [[ "$code" -eq 0 ]]; then
+    printf "  PASS  %s\n" "$name"
+  else
+    printf "  FAIL  %s  (exit %s)\n" "$name" "$code"
+    any_failed=1
+  fi
+done
+echo "────────────────────────────────────────────────────────────────────────"
+
+if [[ "$any_failed" -ne 0 ]]; then
+  echo "One or more freeze gates FAILED."
+  echo "Set LEDGER_FREEZE_UI=1 to include the Chromium UI smoke gate."
+  echo "Set LEDGER_FREEZE_AUDIT=1 to include the source statement audit gate."
+  exit 1
+fi
+
+echo "All freeze gates passed."
+if [[ "${LEDGER_FREEZE_SOURCE_ONLY:-0}" == "1" ]]; then
+  echo "Source-only verification: installed delivery is NOT complete; run ./scripts/deliver."
+fi
+echo "Set LEDGER_FREEZE_SYNTHETIC=1 to use a fresh disposable database."
+echo "Set LEDGER_FREEZE_UI=1 to include the Chromium UI smoke gate."
+echo "Set LEDGER_FREEZE_AUDIT=1 to include the source statement audit gate."

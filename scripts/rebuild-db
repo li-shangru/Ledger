@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+ensure_python_env analysis
+
+CSV_SRC="${LEDGER_SRC:-$("$VENV_PY" -m ledger.runtime csv)}"
+OUT_DIR="${LEDGER_OUT_DIR:-$("$VENV_PY" -m ledger.runtime .)}"
+DB="${LEDGER_DB:-$OUT_DIR/ledger.db}"
+FORMATS="${LEDGER_FORMATS:-csv,parquet,json}"
+LOG_LEVEL="${LEDGER_LOG_LEVEL:-INFO}"
+COPY_EXPORTS="${LEDGER_COPY_EXPORTS:-0}"
+
+if [[ ! -d "$CSV_SRC" ]]; then
+  echo "CSV source directory not found: $CSV_SRC" >&2
+  echo "For recovery/admin rebuilds, point LEDGER_SRC at a complete parser-compatible CSV archive:" >&2
+  echo "  LEDGER_SRC=/path/to/csvs ./scripts/rebuild-db" >&2
+  exit 1
+fi
+
+CSV_COUNT="$(find "$CSV_SRC" -type f -name '*.csv' ! -name '.*' | wc -l | tr -d ' ')"
+if [[ "$CSV_COUNT" == "0" ]]; then
+  echo "No CSV files found under: $CSV_SRC" >&2
+  echo "Set LEDGER_SRC=/path/to/complete-csv-archive for recovery/admin rebuilds." >&2
+  exit 1
+fi
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ledger-rebuild.XXXXXX")"
+# Use the physical path. On macOS /tmp and /var are symlinks; private-file
+# containment deliberately rejects symlinked destination components.
+TMP_DIR="$(cd "$TMP_DIR" && pwd -P)"
+TMP_OUT="$TMP_DIR/out"
+TMP_DB="$TMP_DIR/ledger.db"
+BASELINE_STATE="$TMP_DIR/rebuild-baseline.json"
+_cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap '_cleanup' EXIT
+
+cd "$ROOT"
+
+# Capture the target before the long build. The state contains a WAL-complete
+# private snapshot, so same-count updates committed during the build cannot hide
+# from the final drift gate.
+"$VENV_PY" -m ledger.maintenance.rebuild_promote capture \
+  --target "$DB" \
+  --state "$BASELINE_STATE"
+
+"$VENV_PY" -m ledger.cli build \
+  "$@" \
+  --src "$CSV_SRC" \
+  --out-dir "$TMP_OUT" \
+  --db "$TMP_DB" \
+  --ledger-config "$ROOT/configs/ledger.toml" \
+  --merchant-rules "$ROOT/configs/merchants.toml" \
+  --categories "$ROOT/configs/categories.toml" \
+  --formats "$FORMATS" \
+  --log-level "$LOG_LEVEL"
+
+# Format-independent safety gate: read exception count from import_runs.errors
+# (always persisted, regardless of --formats) rather than the CSV-only
+# exceptions_all.csv. A nonzero exit here aborts before the mv below.
+"$VENV_PY" -m ledger.maintenance.rebuild_guard "$TMP_DB"
+
+BACKUP_DIR="${LEDGER_BACKUP_DIR:-$OUT_DIR/backups}"
+"$VENV_PY" -m ledger.maintenance.rebuild_promote promote \
+  --candidate "$TMP_DB" \
+  --target "$DB" \
+  --backup-dir "$BACKUP_DIR" \
+  --state "$BASELINE_STATE"
+
+if [[ "$COPY_EXPORTS" == "1" || "$COPY_EXPORTS" == "true" ]]; then
+  "$VENV_PY" -m ledger.maintenance.rebuild_promote copy-exports \
+    --source "$TMP_OUT" \
+    --destination "$OUT_DIR"
+else
+  echo "Derived exports were validation-only and were not copied to $OUT_DIR."
+  echo "Set LEDGER_COPY_EXPORTS=1 to keep CSV/Parquet/JSON rebuild outputs."
+fi
+
+echo "Dashboard command: LEDGER_DB=\"$DB\" ./scripts/run-app"

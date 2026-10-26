@@ -1,0 +1,100 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+.env.*
+
+# Test/coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
+
+# Streamlit secrets (keep local)
+.streamlit/secrets.toml
+
+# Local CLI defaults (may hold absolute home paths / local layout). The tracked
+# .ledgerrc.example is the shareable template; keep the real one local.
+.ledgerrc
+
+# Local data artifacts
+data/
+ledger.db
+inputs/
+outputs/
+reports/
+backups/
+db-backups/
+*.db-backup
+
+# Sensitive / generated artifacts (defense-in-depth — never commit real data)
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+.playwright-cli/
+.ledger-downstream-wheels/
+
+# Privacy-safe export artifacts (stem: ledger-{preset}-{timestamp})
+ledger-*.csv
+ledger-*.jsonl
+ledger-*.zip
+# Defense-in-depth: the un-zipped package directory (ledger-{preset}-{timestamp}/)
+# is now built in a tempdir and deleted, but ignore the pattern in case one ever
+# lands in the tree — it holds raw transactions.csv / merchant_summary.csv.
+ledger-*/
+!docs/agent/skills/ledger-query/
+!docs/agent/skills/ledger-query/**
+!docs/agent/skills/ledger-pdf-import/
+!docs/agent/skills/ledger-implement-ticket/
+!docs/agent/skills/ledger-implement-ticket/**
+exports/
+
+# Exported runtime config (config export — derived merchant PII). Default --dest is
+# outside source; ignore the legacy tracked dir
+# too so a local re-export there never gets re-committed.
+configs/exported/
+
+# Full-detail / LLM transaction exports (ledger build --formats csv) — these carry raw
+# description + merchant + amount_signed and are NOT redacted; never commit them.
+transactions_*.csv
+transfers_*.csv
+llm_export_*.csv
+exceptions_*.csv
+
+# uv lockfile (project uses pip; not part of the repo)
+uv.lock
+
+# Agent worktree scratch (never commit)
+.claude/worktrees/
+.worktrees/
+
+# Agent state, financial sidecars, credentials and statements never belong in source.
+.codex/
+.claude/
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.pdf
+*.pem
+*.key

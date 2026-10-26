@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Pre-commit quality gate: lint + tests must pass before a commit lands, so a
+# regression can't reach the live ledger database.
+#
+# Install once (versioned hooks, no external tooling):
+#   git config core.hooksPath scripts/git-hooks
+#
+# Bypass for an intentional WIP commit:  git commit --no-verify
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+VENV_PY="$ROOT/.venv/bin/python"
+VENV_RUFF="$ROOT/.venv/bin/ruff"
+
+# Block accidentally force-added sensitive data/db/pdf files.
+# (git add --force can bypass .gitignore; this catches that.)
+staged="$(git diff --cached --name-only)"
+if echo "$staged" | grep -Eiq '(^|/)data/|\.(db|sqlite3?)(-[[:alnum:]_-]+)?$|\.parquet$|\.pdf$'; then
+  echo "pre-commit: BLOCKED — staged a sensitive data/db/pdf file:" >&2
+  echo "$staged" | grep -Ei '(^|/)data/|\.(db|sqlite3?)(-[[:alnum:]_-]+)?$|\.parquet$|\.pdf$' >&2
+  echo "Unstage it (git restore --staged <file>) or commit with --no-verify if truly intended." >&2
+  exit 1
+fi
+
+# Block exported TOML merchant/category rule dumps (config export). These carry the
+# user's transaction-derived merchant profile (real merchant names) = derived PII and
+# belong outside source; the hook also protects against manually staged copies.
+# Match any ADDED/MODIFIED *.toml under an `exported/` path segment (e.g.
+# configs/exported/merchants.toml). The curated SOURCE config the app reads —
+# configs/merchants.toml / configs/categories.toml (no `exported/` segment) — is
+# deliberately tracked and stays allowed.
+#
+# --diff-filter=d excludes DELETIONS: untracking an exported dump (git rm --cached) is
+# the REMEDIATION, not a leak, and must not be blocked.
+staged_addmod="$(git diff --cached --name-only --diff-filter=d)"
+if echo "$staged_addmod" | grep -Eiq '(^|/)exported/.*\.toml$'; then
+  echo "pre-commit: BLOCKED — staged an exported config TOML (derived merchant PII):" >&2
+  echo "$staged_addmod" | grep -Ei '(^|/)exported/.*\.toml$' >&2
+  echo "These are local-only dumps (config export). Unstage them (git restore --staged <file>)" >&2
+  echo "or commit with --no-verify if truly intended." >&2
+  exit 1
+fi
+
+# Block recognized financial-export CSV/JSONL files regardless of path. The shared
+# predicate checks Ledger export columns and generic account-linked financial column
+# roles without embedding private institution signatures. This is a heuristic, not
+# proof that unmatched files contain no sensitive data; publication still needs review.
+#
+# Inspect the STAGED blob (git show :file), not the working-tree file: an export that is
+# `git add`-ed and then edited on disk would otherwise present a different (clean) header
+# to the check and slip through.
+EXPORT_CHECK="$ROOT/scripts/git-hooks/_is_export_header"
+while IFS= read -r staged_file; do
+  [[ -z "$staged_file" ]] && continue
+  # Only inspect text files with a .csv or .jsonl extension
+  staged_file_lower="$(printf '%s' "$staged_file" | tr '[:upper:]' '[:lower:]')"
+  case "$staged_file_lower" in *.csv|*.jsonl) ;; *) continue ;; esac
+  blob="$(git show ":$staged_file" 2>/dev/null || true)"
+  if printf '%s' "$blob" | "$EXPORT_CHECK"; then
+    echo "pre-commit: BLOCKED — staged file matches a financial-export column pattern (private data): $staged_file" >&2
+    echo "Unstage it (git restore --staged \"$staged_file\") or commit with --no-verify if truly intended." >&2
+    exit 1
+  fi
+done <<< "$staged"
+
+# Privacy checks never depend on development tooling. Only after every staged
+# privacy/export guard has passed may a missing environment skip quality gates.
+if [[ ! -x "$VENV_PY" ]]; then
+  echo "pre-commit: .venv not found; run ./scripts to bootstrap it. Skipping quality gates." >&2
+  exit 0
+fi
+
+# Lint the same paths freeze-check does, incl. the ledger-pdf-import helper scripts
+# (the real import toolchain), so a violation there can't pass commit then fail freeze.
+_LINT_PATHS=(
+  "$ROOT/src"
+  "$ROOT/tests"
+  "$ROOT/streamlit_app.py"
+  "$ROOT/docs/agent/skills/ledger-pdf-import/scripts"
+)
+
+echo "pre-commit: ruff check..."
+"$VENV_RUFF" check "${_LINT_PATHS[@]}"
+
+echo "pre-commit: ruff format --check..."
+"$VENV_RUFF" format --check "${_LINT_PATHS[@]}"
+
+echo "pre-commit: pytest..."
+"$VENV_PY" -m pytest -q
+
+echo "pre-commit: OK"

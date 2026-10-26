@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling>=1.32,<2"]
+build-backend = "build_backend"
+backend-path = ["scripts"]
+
+[project]
+name = "ledger"
+version = "1.11.2"
+description = "Personal finance ledger with multi-institution support"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Shangru Li" }]
+keywords = ["finance", "ledger", "transactions", "budgeting"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
+dependencies = [
+    "pydantic>=2.13,<3",
+    "typer>=0.27,<1",
+    "rich>=15.0,<16",
+    "pyarrow>=25.0.1,<26",
+    "sqlalchemy>=2.0.52,<3",
+    "pandas>=3.0,<4",
+    "rapidfuzz>=3.14,<4",
+    "mcp>=2.2,<3",
+    "jsonschema>=4.26,<5",
+]
+
+[project.optional-dependencies]
+ui = [
+    # Byte-exact official wheel; see vendor/downstream-wheels/.
+    "streamlit==1.66.1",
+    "plotly>=6.9,<7",
+]
+dev = [
+    "pytest>=9.1,<10",
+    "pytest-cov>=7.1,<8",
+    # Repository-built same-name local version; see vendor/downstream-wheels/.
+    "playwright==1.62.0+ledger.1",
+    "ruff>=0.16,<1",
+    "mypy>=2.3,<3",
+    "pip-audit>=2.10",
+    "hatchling>=1.32,<2",
+]
+analysis = [
+    # polars powers the optional Parquet export (ledger build); not needed for the
+    # core SQLite workflow, so it lives here rather than in core dependencies.
+    "polars>=1.43,<2",
+]
+
+[project.urls]
+Repository = "https://github.com/li-shangru/Ledger"
+Issues = "https://github.com/li-shangru/Ledger/issues"
+
+[project.scripts]
+ledger = "ledger.cli:app"
+ledger-mcp = "ledger.mcp.server:main"
+ledger-mcp-write = "ledger.mcp.write_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ledger"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"configs/ledger.toml" = "ledger/seeds/ledger.toml"
+"configs/merchants.toml" = "ledger/seeds/merchants.toml"
+"configs/categories.toml" = "ledger/seeds/categories.toml"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "configs", "scripts", "tests", "docs", "vendor", "README.md", "AGENTS.md", "LICENSE", "pyproject.toml", "requirements.lock", "streamlit_app.py", ".streamlit/config.toml", ".ledgerrc.example", ".python-version", ".gitignore", ".editorconfig", "SECURITY.md", ".github/workflows/ci.yml", "SOURCE_MANIFEST.json"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",    # Don't enforce line length (handled by formatter)
+    "RUF022",  # Don't require sorted __all__
+    "RUF012",  # Don't require ClassVar for class constants
+    "B904",    # Don't require exception chaining
+    "SIM102",  # Allow nested if statements
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Parser modules are imported for their @register_parser side effects.
+"src/ledger/parsers/__init__.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.14"
+# The sqlalchemy plugin types ORM attributes as their Mapped[T] python type (T) rather
+# than Column[T], which removes the false positives that previously forced a blanket
+# ignore_errors override on the analysis modules. All models are now Mapped[]-typed.
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+# Pragmatic type checking for personal projects
+disallow_untyped_defs = false  # Allow untyped functions
+disallow_incomplete_defs = false  # Allow incomplete type annotations
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_reexport = false
+check_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

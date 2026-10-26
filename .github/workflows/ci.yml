@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Source gate
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      LEDGER_FREEZE_SYNTHETIC: "1"
+      LEDGER_FREEZE_UI: "1"
+      LEDGER_FREEZE_SOURCE_ONLY: "1"
+      LEDGER_FREEZE_AUDIT: "0"
+      PIP_CONFIG_FILE: /dev/null
+      PIP_INDEX_URL: https://pypi.org/simple
+      PIP_EXTRA_INDEX_URL: ""
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare isolated output directories
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import shlex
+          import socket
+
+          base = Path(os.environ["RUNNER_TEMP"]) / "ledger-ci"
+          base.mkdir(mode=0o700, exist_ok=True)
+          base.chmod(0o700)
+          directories = {
+              "TMPDIR": "tmp",
+              "LEDGER_WHEEL_DIR": "wheels",
+              "LEDGER_DELIVERY_WORK_ROOT": "delivery",
+              "LEDGER_HOME": "runtime",
+              "PIP_CACHE_DIR": "pip-cache",
+              "UV_CACHE_DIR": "uv-cache",
+              "UV_PYTHON_INSTALL_DIR": "python",
+              "PLAYWRIGHT_BROWSERS_PATH": "browsers",
+              "RUFF_CACHE_DIR": "ruff-cache",
+              "MYPY_CACHE_DIR": "mypy-cache",
+              "XDG_CACHE_HOME": "cache",
+              "HOMEBREW_CACHE": "brew-cache",
+              "HOMEBREW_TEMP": "brew-temp",
+              "HOMEBREW_LOGS": "brew-logs",
+          }
+          values = {}
+          for key, relative in directories.items():
+              path = base / relative
+              path.mkdir(mode=0o700, exist_ok=True)
+              values[key] = str(path)
+          values["COVERAGE_FILE"] = str(base / ".coverage")
+          values["PYTEST_ADDOPTS"] = (
+              "--basetemp=" + shlex.quote(str(base / "pytest"))
+              + " -o cache_dir=" + shlex.quote(str(base / "pytest-cache"))
+          )
+          with socket.socket() as listener:
+              listener.bind(("127.0.0.1", 0))
+              values["PORT"] = str(listener.getsockname()[1])
+          with Path(os.environ["GITHUB_ENV"]).open("a") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          PYTHON
+
+      - name: Set up Python tooling
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: false
+
+      - name: Verify platform and install native prerequisites
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+          xcrun --find vtool >/dev/null
+          uv python install 3.14
+          ledger_python="$(uv python find 3.14)"
+          "$ledger_python" -c 'import platform, sys; assert sys.version_info[:2] == (3, 14); assert platform.machine() == "arm64"'
+          printf 'LEDGER_PYTHON=%s\n' "$ledger_python" >> "$GITHUB_ENV"
+          if ! command -v pdftotext >/dev/null; then
+            brew install poppler
+          fi
+          command -v pdftotext >/dev/null
+
+      - name: Build verified downstream wheels and install the lock
+        run: |
+          "$LEDGER_PYTHON" -m venv .venv
+          ./scripts/build-downstream-wheels "$LEDGER_WHEEL_DIR"
+          .venv/bin/python -m pip install --no-index --no-deps \
+            "$LEDGER_WHEEL_DIR/streamlit-1.66.1-py3-none-any.whl" \
+            "$LEDGER_WHEEL_DIR/playwright-1.62.0+ledger.1-py3-none-macosx_26_0_arm64.whl"
+          .venv/bin/python -m pip install --find-links "$LEDGER_WHEEL_DIR" \
+            --no-deps -r requirements.lock
+          .venv/bin/python -m pip install --no-deps --force-reinstall -e .
+          .venv/bin/python -m pip check
+          .venv/bin/python -m ledger.maintenance.environment_check
+
+      - name: Run the complete synthetic source and UI gate
+        run: ./scripts/freeze-check
+
+      - name: Verify fresh synthetic MCP processes
+        run: .venv/bin/python -I scripts/ledger_delivery.py _probe

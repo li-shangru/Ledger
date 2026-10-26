@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+cd "$ROOT"
+
+ensure_python_env full-dev
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  exec "$VENV_PY" -m ledger.ui.smoke --help
+fi
+
+# Ensure the Chromium browser binary is installed (idempotent; one-time download)
+"$VENV_PY" -m playwright install chromium
+
+SCREENSHOTS="${LEDGER_UI_SMOKE_SCREENSHOTS:-/tmp/ledger-ui-smoke}"
+mkdir -p "$SCREENSHOTS"
+
+if [[ -n "${LEDGER_UI_SMOKE_URL:-}" ]]; then
+  exec "$VENV_PY" -m ledger.ui.smoke \
+    --base-url "$LEDGER_UI_SMOKE_URL" \
+    --screenshots "$SCREENSHOTS" \
+    "$@"
+fi
+
+PORT="${PORT:-8502}"
+BASE_URL="http://localhost:${PORT}"
+LOG_FILE="$SCREENSHOTS/streamlit.log"
+
+PORT="$PORT" ./scripts/run-app >"$LOG_FILE" 2>&1 &
+APP_PID=$!
+
+cleanup() {
+  if kill -0 "$APP_PID" >/dev/null 2>&1; then
+    kill "$APP_PID" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
+        wait "$APP_PID" >/dev/null 2>&1 || true
+        return
+      fi
+      sleep 0.2
+    done
+    kill -9 "$APP_PID" >/dev/null 2>&1 || true
+    wait "$APP_PID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+"$VENV_PY" -m ledger.ui.smoke \
+  --base-url "$BASE_URL" \
+  --screenshots "$SCREENSHOTS" \
+  "$@"

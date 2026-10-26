@@ -1,0 +1,16 @@
+# Public defaults. Account aliases and per-institution rules belong in private runtime configuration.
+[general]
+strict = true
+etransfer_is_cashflow = true
+cc_payment_is_transfer = true
+
+[general.account_aliases]
+
+[fuzzy]
+enabled = true
+threshold = 85
+min_merchant_length = 3
+
+# Add [rules.<private-institution-key>] in a private runtime copy when overriding
+# an enabled adapter's declared classification defaults. An explicit empty section
+# disables that adapter's default patterns for the selected institution.

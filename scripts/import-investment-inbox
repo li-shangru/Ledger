@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+
+ensure_python_env core
+cd "$ROOT"
+
+exec "$VENV_PY" -m ledger.cli import investment "$@"

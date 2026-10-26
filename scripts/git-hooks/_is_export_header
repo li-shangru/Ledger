@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Heuristic privacy guard shared by the hook and its synthetic tests.
+
+Read CSV/JSONL from stdin. Exit 0 for known Ledger export columns or generic
+account-linked financial tables; exit 1 otherwise. No provider names or private
+statement signatures belong here. A non-match is not proof a file is publishable.
+"""
+
+import csv
+import io
+import json
+import re
+import sys
+
+
+def column(value):
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def ledger_export(keys):
+    return {"txnid", "merchant"} <= keys and bool(
+        keys & {"amount", "amountsigned", "amountraw", "description"}
+    )
+
+
+ACCOUNT = {"account", "accountid", "accountnumber", "accountref", "accountinformation"}
+ASSET = {"asset", "assetclass", "assetcategory", "security", "symbol", "instrument"}
+MONEY = {"amount", "balance", "marketvalue", "netassetvalue", "nav", "currentvalue"}
+QUANTITY = {"quantity", "units", "position"}
+CURRENCY = {"currency", "currencycode", "ccy"}
+DATE = {"date", "postingdate", "transactiondate", "valuedate"}
+
+
+def financial_columns(keys):
+    return bool(
+        (keys & MONEY and keys & (ASSET | CURRENCY | DATE))
+        or (keys & QUANTITY and keys & ASSET and keys & CURRENCY)
+    )
+
+
+def sensitive(text):
+    lines = text.lstrip("\ufeff").splitlines()
+    if not lines:
+        return False
+    # JSONL exports use object keys; values never decide a schema match.
+    if lines[0].lstrip().startswith("{"):
+        try:
+            record = json.loads(lines[0])
+        except (ValueError, RecursionError):
+            return False
+        if isinstance(record, dict):
+            keys = {column(key) for key in record}
+            return ledger_export(keys) or bool(keys & ACCOUNT and financial_columns(keys))
+        return False
+    try:
+        rows = list(csv.reader(io.StringIO(text.lstrip("\ufeff")), strict=True))
+    except csv.Error:
+        return False
+    if not rows:
+        return False
+    first = {column(cell) for cell in rows[0]}
+    if ledger_export(first) or (first & ACCOUNT and financial_columns(first)):
+        return True
+    # Sectioned reports may place account metadata separately from column headers.
+    # Consider only the first three cells for identity/section roles; ordinary
+    # descriptions later in a row do not establish an account schema.
+    has_account = any({column(cell) for cell in row[:3]} & ACCOUNT for row in rows)
+    if not has_account:
+        return False
+    return any(
+        {column(cell) for cell in row[:3]} & {"header", "columns"}
+        and financial_columns({column(cell) for cell in row})
+        for row in rows
+    )
+
+
+raise SystemExit(0 if sensitive(sys.stdin.read()) else 1)
