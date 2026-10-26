@@ -2,7 +2,7 @@
 """Validate and export reviewed tracked source without Git history or runtime files.
 
 This is a conservative structural gate, not a semantic privacy certification.
-Review fixture provenance and public text separately. A check returns the digest
+Review fixture provenance, public text and image pixels separately. A check returns the digest
 that export requires, binding the copy to the exact reviewed file manifest.
 """
 
@@ -14,8 +14,10 @@ import json
 import os
 import re
 import stat
+import struct
 import subprocess
 import sys
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -26,6 +28,11 @@ MANIFEST_NAME = "SOURCE_MANIFEST.json"
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_FILES = 10_000
+MAX_PNG_BYTES = 2 * 1024 * 1024
+MAX_PNG_DIMENSION = 4096
+MAX_PNG_PIXELS = 8_000_000
+MAX_PNG_CHUNKS = 1024
+DOCUMENTATION_PNG = re.compile(r"docs/images/[a-z0-9][a-z0-9_-]{0,95}\.png")
 SOURCE_ROOTS = frozenset({"src", "tests", "scripts", "docs", "configs", "vendor"})
 ROOT_FILES = frozenset(
     {
@@ -200,7 +207,7 @@ def _admit_path(relative: str) -> None:
     if PRIVATE_BASENAMES.fullmatch(name) and relative != ".ledgerrc.example":
         raise SourceError(f"{relative}: credential or local configuration file")
     if re.fullmatch(
-        r"(?:transactions|transfers|statement|statement[-_].*|llm_export.*)\.(?:json|jsonl|txt|xml)",
+        r"(?:transactions|transfers|statement|statement[-_].*|llm_export.*)\.(?:json|jsonl|txt|xml|png)",
         name,
         re.IGNORECASE,
     ):
@@ -209,6 +216,8 @@ def _admit_path(relative: str) -> None:
         return
     if any(part.startswith(".") for part in parts):
         raise SourceError(f"{relative}: hidden source entries are not admitted")
+    if DOCUMENTATION_PNG.fullmatch(relative):
+        return
     suffix = PurePosixPath(name).suffix.lower()
     extensionless_script = parts[0] == "scripts" and not suffix
     license_text = name == "LICENSE" or name.startswith("LICENSE-")
@@ -241,6 +250,83 @@ def _admit_text(relative: str, content: bytes) -> None:
             raise SourceError(f"{relative}: suspicious private absolute path")
     if any(pattern.search(text) for pattern in CREDENTIAL_SIGNATURES):
         raise SourceError(f"{relative}: possible credential material")
+
+
+def _admit_png(relative: str, content: bytes) -> None:
+    """Admit bounded RGB8 PNG structure; pixel privacy still requires human review."""
+    if len(content) > MAX_PNG_BYTES or not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise SourceError(f"{relative}: invalid or oversized PNG")
+    offset = 8
+    chunks = 0
+    width = height = 0
+    compressed: list[bytes] = []
+    ended = False
+    while offset < len(content):
+        chunks += 1
+        if chunks > MAX_PNG_CHUNKS or len(content) - offset < 12:
+            raise SourceError(f"{relative}: truncated PNG or too many chunks")
+        size = struct.unpack_from(">I", content, offset)[0]
+        if size > len(content) - offset - 12:
+            raise SourceError(f"{relative}: truncated PNG chunk")
+        kind = content[offset + 4 : offset + 8]
+        payload_end = offset + 8 + size
+        payload = content[offset + 8 : payload_end]
+        crc = struct.unpack_from(">I", content, payload_end)[0]
+        if crc != zlib.crc32(content[offset + 4 : payload_end]):
+            raise SourceError(f"{relative}: PNG checksum mismatch")
+        offset = payload_end + 4
+        if kind == b"IHDR":
+            if chunks != 1 or size != 13:
+                raise SourceError(f"{relative}: invalid PNG header order or size")
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(
+                ">IIBBBBB", payload
+            )
+            if (
+                not 0 < width <= MAX_PNG_DIMENSION
+                or not 0 < height <= MAX_PNG_DIMENSION
+                or width * height > MAX_PNG_PIXELS
+                or (depth, color, compression, filtering, interlace) != (8, 2, 0, 0, 0)
+            ):
+                raise SourceError(f"{relative}: unsupported or oversized PNG header")
+        elif kind == b"IDAT":
+            if not width:
+                raise SourceError(f"{relative}: PNG data precedes its header")
+            compressed.append(payload)
+        elif kind == b"IEND":
+            if not compressed or size or offset != len(content):
+                raise SourceError(f"{relative}: invalid PNG end or trailing content")
+            ended = True
+            break
+        else:
+            raise SourceError(f"{relative}: PNG metadata or unsupported chunk")
+    if not ended:
+        raise SourceError(f"{relative}: incomplete PNG")
+
+    # The admitted sequence is one IHDR, consecutive IDAT chunks and one IEND.
+    # Decode at most one byte beyond the exact RGB scanline size, without flush.
+    stride = 1 + width * 3
+    expected = height * stride
+    decoder = zlib.decompressobj()
+    try:
+        decoded = decoder.decompress(b"".join(compressed), expected + 1)
+    except zlib.error as error:
+        raise SourceError(f"{relative}: invalid PNG compressed data") from error
+    if (
+        len(decoded) != expected
+        or not decoder.eof
+        or decoder.unused_data
+        or decoder.unconsumed_tail
+    ):
+        raise SourceError(f"{relative}: invalid PNG decoded size or compressed stream boundary")
+    if any(value > 4 for value in decoded[::stride]):
+        raise SourceError(f"{relative}: unsupported PNG row filter")
+
+
+def _admit_content(relative: str, content: bytes) -> None:
+    if DOCUMENTATION_PNG.fullmatch(relative):
+        _admit_png(relative, content)
+    else:
+        _admit_text(relative, content)
 
 
 def _read_regular(root_fd: int, relative: str) -> tuple[bytes, int]:
@@ -341,7 +427,7 @@ def check_source(repo: str | Path) -> SourceSnapshot:
             git_mode = 0o755 if disk_mode & 0o111 else 0o644
             if git_mode != expected_mode:
                 raise SourceError(f"{relative}: executable mode differs from the Git index")
-            _admit_text(relative, content)
+            _admit_content(relative, content)
             total += len(content)
             if total > MAX_TOTAL_BYTES:
                 raise SourceError("tracked content exceeds the source size bound")
@@ -442,7 +528,7 @@ def verify_export(dest: str | Path, *, expected_sha256: str | None = None) -> di
             ):
                 raise SourceError("invalid source manifest metadata")
             content, file_mode = _read_regular(root_fd, relative)
-            _admit_text(relative, content)
+            _admit_content(relative, content)
             if (
                 len(content) != entry["size"]
                 or _sha256(content) != entry["sha256"]

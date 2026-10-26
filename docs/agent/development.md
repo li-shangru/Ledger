@@ -235,3 +235,14 @@ the manifest digest, `export --repo --dest --expect-sha256` to copy the exact re
 files to a new external directory, and `verify --dest --expect-sha256` to compare
 bytes, modes, and file inventory. Fill each option with its value; `--dest` must not
 exist. This structural check does not replace review of fixture provenance.
+
+Documentation images are limited to lowercase `.png` names directly under
+`docs/images/`, using letters, digits, underscores or hyphens (at most 96 stem
+characters, beginning with a letter or digit). Only noninterlaced 8-bit RGB is
+admitted: at most 2 MiB, 4096 pixels per axis, 8 million pixels and 1024 chunks.
+The validator checks CRCs, chunk order and bounded scanline decompression, allowing
+only `IHDR`, consecutive `IDAT` chunks and a final `IEND`. Metadata and trailing
+content are refused. Human review of the exact image pixels and their synthetic
+provenance remains required before publication; structural validation cannot
+certify privacy. Exports and source distributions preserve admitted images and
+their manifest hashes. The wheel payload remains package code and bundled seeds.

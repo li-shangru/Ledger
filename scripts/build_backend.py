@@ -76,7 +76,7 @@ def source_snapshot(root: Path):
             ):
                 raise source.SourceError("invalid source manifest metadata")
             content, file_mode = source._read_regular(descriptor, relative)
-            source._admit_text(relative, content)
+            source._admit_content(relative, content)
             if (
                 len(content) != entry["size"]
                 or source._sha256(content) != entry["sha256"]

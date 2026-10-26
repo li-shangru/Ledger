@@ -15,6 +15,25 @@ Locked UI and development environment: **macOS 26 · Apple silicon**.
 [Get started](#get-started) · [How it works](#how-it-works) ·
 [Documentation](docs/README.md) · [Contributing](docs/contributing.md)
 
+## Dashboard preview
+
+Illustrative dashboard using fictional data.
+
+**Overview:** see income, true cost, and net cash flow alongside the reporting
+period and links to supporting details.
+
+![Ledger overview showing fictional income, spending, and a financial brief](docs/images/dashboard-overview.png)
+
+<details>
+<summary>See category trends and spending breakdowns</summary>
+
+**Categories:** compare monthly trends and drill into the categories behind a
+spending total, here groceries, dining, and coffee.
+
+![Ledger category analysis showing fictional food spending from July to September](docs/images/dashboard-categories.png)
+
+</details>
+
 ## Why Ledger?
 
 A spending total can hide transfers, missing statements, or mixed currencies.

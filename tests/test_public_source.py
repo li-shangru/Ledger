@@ -6,8 +6,10 @@ import hashlib
 import importlib.util
 import json
 import os
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -367,3 +369,238 @@ def test_export_verification_rejects_permission_drift(source_repo, relative, mod
     (dest / relative).chmod(mode)
     with pytest.raises(public_source.SourceError):
         public_source.verify_export(dest, expected_sha256=result["manifest_sha256"])
+
+
+PNG_PATH = "docs/images/synthetic-preview.png"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_chunk(kind: bytes, payload: bytes = b"") -> bytes:
+    return (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", zlib.crc32(kind + payload))
+    )
+
+
+def _png_header(
+    width=1, height=1, depth=8, color=2, compression=0, filtering=0, interlace=0
+) -> bytes:
+    return _png_chunk(
+        b"IHDR",
+        struct.pack(">IIBBBBB", width, height, depth, color, compression, filtering, interlace),
+    )
+
+
+def _png(compressed: bytes | None = None, *, header: bytes | None = None) -> bytes:
+    return (
+        PNG_SIGNATURE
+        + (_png_header() if header is None else header)
+        + _png_chunk(
+            b"IDAT", zlib.compress(b"\0\x14\x28\x3c") if compressed is None else compressed
+        )
+        + _png_chunk(b"IEND")
+    )
+
+
+def _backend():
+    spec = importlib.util.spec_from_file_location(
+        "ledger_png_build_backend_test", SCRIPT.with_name("build_backend.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_png_export_and_backend_manifest_ingestion_preserve_exact_bytes(source_repo):
+    # All five PNG filters and split IDAT chunks are valid. Pixels are authored here.
+    rows = b"".join(bytes([value, 20, 40, 60]) for value in range(5))
+    compressed = zlib.compress(rows)
+    content = (
+        PNG_SIGNATURE
+        + _png_header(height=5)
+        + _png_chunk(b"IDAT", compressed[:3])
+        + _png_chunk(b"IDAT")
+        + _png_chunk(b"IDAT", compressed[3:])
+        + _png_chunk(b"IEND")
+    )
+    _put(source_repo, PNG_PATH, content)
+    _git(source_repo, "add", "--all")
+    dest, result = _export(source_repo)
+    checked = public_source.check_source(source_repo)
+    assert checked.contents[PNG_PATH] == (dest / PNG_PATH).read_bytes() == content
+    entry = next(item for item in checked.manifest["files"] if item["path"] == PNG_PATH)
+    assert entry == {
+        "path": PNG_PATH,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "size": len(content),
+        "mode": "0644",
+    }
+    assert public_source.verify_export(dest, expected_sha256=result["manifest_sha256"])["verified"]
+    snapshot = _backend().source_snapshot(dest)
+    assert snapshot.contents == checked.contents
+    assert snapshot.manifest_sha256 == checked.manifest_sha256
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "docs/preview.png",
+        "src/preview.png",
+        "tests/preview.png",
+        "docs/images/subdir/preview.png",
+        "docs/images/Preview.png",
+        "docs/images/preview.PNG",
+        "docs/images/.preview.png",
+        "docs/images/preview.extra.png",
+        "docs/images/preview.svg",
+        "docs/images/preview.jpg",
+        "docs/images/preview.pdf",
+        "docs/images/secrets.png",
+        "docs/images/transactions.png",
+        "docs/images/statement-2042.png",
+        "docs/images/llm_export.png",
+        "docs/images/" + "a" * 97 + ".png",
+    ],
+)
+def test_png_cannot_bypass_source_path_restrictions(source_repo, relative):
+    _put(source_repo, relative, _png())
+    _git(source_repo, "add", "--all")
+    with pytest.raises(public_source.SourceError):
+        public_source.check_source(source_repo)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        _png_header(width=0),
+        _png_header(height=0),
+        _png_header(width=4097),
+        _png_header(height=4097),
+        _png_header(width=4000, height=2001),
+        _png_header(depth=16),
+        *(_png_header(color=color) for color in (0, 1, 3, 4, 5, 6)),
+        _png_header(compression=1),
+        _png_header(filtering=1),
+        _png_header(interlace=1),
+    ],
+)
+def test_png_header_constraints_are_enforced_before_decompression(header, monkeypatch):
+    def unexpected_decompression(*args, **kwargs):
+        pytest.fail("unsupported PNG header reached decompression")
+
+    monkeypatch.setattr(zlib, "decompressobj", unexpected_decompression)
+    with pytest.raises(public_source.SourceError):
+        public_source._admit_content(PNG_PATH, _png(header=header))
+
+
+@pytest.mark.parametrize(
+    "kind", [b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"iCCP", b"PLTE", b"acTL", b"abcd"]
+)
+def test_png_metadata_and_other_chunks_are_refused(kind):
+    content = PNG_SIGNATURE + _png_header() + _png_chunk(kind, b"synthetic") + _png()[33:]
+    with pytest.raises(public_source.SourceError):
+        public_source._admit_content(PNG_PATH, content)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(b"not a PNG", id="signature"),
+        pytest.param(PNG_SIGNATURE, id="empty"),
+        pytest.param(_png()[:-1], id="truncated-chunk"),
+        pytest.param(PNG_SIGNATURE + struct.pack(">I", 0xFFFFFFFF) + b"IHDR", id="chunk-size"),
+        pytest.param(_png(header=_png_chunk(b"IHDR", b"\0" * 12)), id="header-size"),
+        pytest.param(PNG_SIGNATURE + _png()[33:], id="missing-header"),
+        pytest.param(_png(header=_png_header() * 2), id="repeated-header"),
+        pytest.param(
+            PNG_SIGNATURE + _png_header() + _png_chunk(b"IDAT") + _png()[8:],
+            id="header-between-data-chunks",
+        ),
+        pytest.param(PNG_SIGNATURE + _png_header() + _png_chunk(b"IEND"), id="missing-data"),
+        pytest.param(_png()[:-12], id="missing-end"),
+        pytest.param(_png()[:-12] + _png_chunk(b"IEND", b"x"), id="end-payload"),
+        pytest.param(_png() + b"trailing", id="trailing-bytes"),
+        pytest.param(_png() + _png_chunk(b"IEND"), id="repeated-end"),
+        pytest.param(_png() + _png_chunk(b"IDAT"), id="data-after-end"),
+        pytest.param(_png()[:32] + bytes([_png()[32] ^ 1]) + _png()[33:], id="header-crc"),
+        pytest.param(_png()[:-13] + bytes([_png()[-13] ^ 1]) + _png()[-12:], id="data-crc"),
+        pytest.param(_png()[:-1] + bytes([_png()[-1] ^ 1]), id="end-crc"),
+        pytest.param(_png(b"invalid"), id="invalid-zlib"),
+        pytest.param(_png(zlib.compress(b"\0" * 4)[:-1]), id="truncated-zlib"),
+        pytest.param(
+            _png(zlib.compress(b"\0" * 4) + zlib.compress(b"")), id="multiple-zlib-members"
+        ),
+        pytest.param(_png(zlib.compress(b"\0" * 4) + b"x"), id="zlib-trailing-bytes"),
+        pytest.param(_png(zlib.compress(b"\0" * 3)), id="short-decoded-data"),
+        pytest.param(_png(zlib.compress(b"\0" * 5)), id="extra-decoded-data"),
+        pytest.param(_png(zlib.compress(b"\0" * 200_000)), id="oversized-decoded-data"),
+        pytest.param(_png(zlib.compress(b"\5\x14\x28\x3c")), id="invalid-row-filter"),
+    ],
+)
+def test_malformed_png_structure_and_streams_are_refused(content):
+    with pytest.raises(public_source.SourceError):
+        public_source._admit_content(PNG_PATH, content)
+
+
+def test_png_file_and_chunk_count_bounds_are_enforced_before_decompression(monkeypatch):
+    def unexpected_decompression(*args, **kwargs):
+        pytest.fail("oversized PNG reached decompression")
+
+    monkeypatch.setattr(zlib, "decompressobj", unexpected_decompression)
+    cases = [
+        _png() + b"\0" * (2 * 1024 * 1024),
+        PNG_SIGNATURE + _png_header() + _png_chunk(b"IDAT") * 1024 + _png_chunk(b"IEND"),
+    ]
+    for content in cases:
+        with pytest.raises(public_source.SourceError):
+            public_source._admit_content(PNG_PATH, content)
+
+
+def test_png_decompression_never_exceeds_the_declared_scanline_budget(monkeypatch):
+    create_decoder = zlib.decompressobj
+    limits = []
+
+    class BoundedDecoder:
+        def __init__(self):
+            self.decoder = create_decoder()
+
+        def decompress(self, content, max_length):
+            limits.append(max_length)
+            return self.decoder.decompress(content, max_length)
+
+        def __getattr__(self, name):
+            return getattr(self.decoder, name)
+
+    monkeypatch.setattr(zlib, "decompressobj", BoundedDecoder)
+    with pytest.raises(public_source.SourceError, match="decoded size"):
+        public_source._admit_content(PNG_PATH, _png(zlib.compress(b"\0" * 200_000)))
+    assert limits == [5]  # One RGB scanline, one filter byte, one overflow sentinel.
+
+
+@pytest.mark.parametrize("reader", ["export", "backend"])
+def test_png_manifest_readers_revalidate_even_when_hashes_match(source_repo, reader):
+    _put(source_repo, PNG_PATH, _png())
+    _git(source_repo, "add", "--all")
+    dest, _result = _export(source_repo)
+    malformed = _png() + b"synthetic hidden payload"
+    (dest / PNG_PATH).write_bytes(malformed)
+    manifest_path = dest / public_source.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_bytes())
+    entry = next(item for item in manifest["files"] if item["path"] == PNG_PATH)
+    entry.update(sha256=hashlib.sha256(malformed).hexdigest(), size=len(malformed))
+    manifest_path.write_bytes(public_source._manifest_bytes(manifest))
+    backend = _backend()
+    action = public_source.verify_export if reader == "export" else backend.source_snapshot
+    error = public_source.SourceError if reader == "export" else backend.source.SourceError
+    with pytest.raises(error):
+        action(dest)
+
+
+def test_png_bytes_disguised_as_text_still_fail_utf8_validation(source_repo):
+    _put(source_repo, "docs/images/preview.txt", _png())
+    _git(source_repo, "add", "--all")
+    with pytest.raises(public_source.SourceError, match="not UTF-8"):
+        public_source.check_source(source_repo)
