@@ -1807,7 +1807,14 @@ def test_actual_read_stdio_is_protocol_clean_and_shuts_down_bounded(
     error_path = tmp_path / f"read-{mode}.stderr"
 
     async def exercise_protocol(errors: TextIO) -> tuple[object, str, object, object, object]:
-        parameters = StdioServerParameters(command=str(command), args=["--db", str(db_path)])
+        parameters = StdioServerParameters(
+            command=str(command),
+            args=["--db", str(db_path)],
+            env={
+                "LEDGER_HOME": str(tmp_path / "runtime"),
+                "LEDGER_ADAPTER_CONFIG": str(tmp_path / "no-adapters.json"),
+            },
+        )
         with anyio.fail_after(10):
             async with Client(stdio_client(parameters, errlog=errors), mode=mode) as client:
                 assert client.instructions == SERVER_INSTRUCTIONS

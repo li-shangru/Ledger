@@ -536,12 +536,14 @@ def _patch_finalize_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "print_merchant_summary", lambda _summary: None)
 
 
-def test_finalize_writes_coverage_for_a_zero_row_statement(
+def test_finalize_does_not_record_unapproved_zero_row_statement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Finalize drops every item carrying a skipped_reason, so a zero-row statement
-    contributes no transactions and no processed-file row. Without a coverage row the
-    promoted DB cannot tell that month apart from one never imported."""
+    """An unapproved manifest entry cannot assert an imported month.
+
+    Complete accepted no-activity sources are covered by the end-to-end PDF
+    import regressions; this parked run has no approved source evidence.
+    """
     paths, run_dir = _ready_finalize_run(
         tmp_path,
         [
@@ -559,11 +561,7 @@ def test_finalize_writes_coverage_for_a_zero_row_statement(
 
     workflow.finalize(SimpleNamespace(run_dir=run_dir), paths)
 
-    [row] = _coverage_rows(paths.db_path)
-    assert (row.account_slug, row.period) == ("meadow-mastercard-9012", "2026-07")
-    assert row.row_count == 0
-    assert row.skipped_reason == "no_transactions_extracted"
-    assert row.institution == "meadow"
+    assert _coverage_rows(paths.db_path) == []
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,9 @@ from ledger.imports.pdf.post_processing import (
     run_post_processing,
 )
 from ledger.imports.pdf.processing import (
+    is_no_activity_statement,
     load_config,
+    no_activity_only_import,
     record_processed_files,
     result_counts,
     validate_processing_result,
@@ -480,16 +482,23 @@ def _stage_with_lifetime(
             )
         extraction_results.append(extracted)
     statement_pdf_to_csv.write_manifest(extraction_manifest, extraction_results, dry_run=False)
+    extraction_by_pdf = {
+        entry["pdf"]: entry
+        for entry in read_json(extraction_manifest)
+        if isinstance(entry, dict) and isinstance(entry.get("pdf"), str)
+    }
 
     for extraction in extraction_results:
         item = staged_by_name[extraction.pdf.name]
+        no_activity = is_no_activity_statement(extraction_by_pdf.get(str(extraction.pdf), {}))
         item.update(
             {
                 "csv_path": str(extraction.csv_path) if extraction.csv_path else "",
                 "processed_pdf": str(extraction.processed_pdf) if extraction.processed_pdf else "",
                 "statement_type": extraction.statement_type,
                 "transaction_count": extraction.transaction_count,
-                "skipped_reason": extraction.skipped_reason,
+                "skipped_reason": "" if no_activity else extraction.skipped_reason,
+                "no_activity": no_activity,
                 "validation_errors": list(extraction.validation_errors),
                 "validation_warnings": list(extraction.validation_warnings),
                 "account_slug": getattr(extraction, "account_slug", ""),
@@ -626,7 +635,12 @@ def _stage_with_lifetime(
                             is not None
                         ):
                             raise AdapterError("import_account_conflict")
-        validate_processing_result(result, parse_exceptions)
+        if result.total_scanned == 0 and no_activity_only_import(
+            extraction_manifest, approved_csv_paths
+        ):
+            validate_processing_result(result, parse_exceptions, allow_no_activity=True)
+        else:
+            validate_processing_result(result, parse_exceptions)
         verify_import_inputs(
             import_binding,
             csv_root=csv_root,
@@ -1443,7 +1457,12 @@ def _finalize_locked(args: argparse.Namespace, paths: Paths, run_dir: Path) -> N
             account_slugs=account_slugs,
             defer_identity_check_to_writer=True,
         )
-        validate_processing_result(result, parse_exceptions)
+        if result.total_scanned == 0 and no_activity_only_import(
+            Path(run_state.get("extraction_manifest", "")), approved_csv_paths
+        ):
+            validate_processing_result(result, parse_exceptions, allow_no_activity=True)
+        else:
+            validate_processing_result(result, parse_exceptions)
         run_migrations(staging_db)
         write_result_to_db(staging_db, csv_root, result)
 
@@ -1484,6 +1503,7 @@ def _finalize_locked(args: argparse.Namespace, paths: Paths, run_dir: Path) -> N
                 staging_db,
                 Path(extraction_manifest_value),
                 account_aliases=account_aliases,
+                source_files=approved_csv_paths,
             )
             # Record which account-months this run covered, INCLUDING the statements
             # finalize is about to drop for having produced no rows. Nothing else in
@@ -1495,6 +1515,7 @@ def _finalize_locked(args: argparse.Namespace, paths: Paths, run_dir: Path) -> N
                 staging_db,
                 Path(extraction_manifest_value),
                 account_aliases=account_aliases,
+                source_files=approved_csv_paths,
             )
 
         post_processing = run_post_processing(staging_db, config)

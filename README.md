@@ -173,7 +173,7 @@ configured maintainer clients is a separate [delivery workflow](docs/agent/deliv
 <details>
 <summary>Version and dependency details</summary>
 
-Version 1.11.2. Runtime: Python 3.14 and MCP Python SDK 2.2. Optional UI: Streamlit
+Version 1.11.3. Runtime: Python 3.14 and MCP Python SDK 2.2. Optional UI: Streamlit
 1.66.1. Development: Playwright 1.62.0+ledger.1, locked to macOS 26 arm64. The
 repository includes synthetic fixtures, public seeds, and dependency build recipes;
 financial databases and private development history are excluded.

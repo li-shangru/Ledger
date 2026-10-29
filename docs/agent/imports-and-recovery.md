@@ -65,6 +65,12 @@ The incremental import flow:
 7. Writes `manifest.json` with status, gates, artifacts, counts, and next actions
 8. Builds a deterministic three-to-five-observation financial brief from the promoted database
 
+Complete, validated no-activity PDF statements follow this same flow, including a
+batch containing only such statements. Their temporary CSVs contain headers and
+no transaction rows. Finalize records their printed coverage as imported with no
+activity, retains their source hashes, and archives the PDFs after publication.
+An incomplete statement or an unexpectedly empty extraction does not qualify.
+
 The Streamlit Import Center exposes the same upload, stage, review, finalize/resume,
 and cancel state machine. Its controls do not bypass CLI gates: uploaded PDFs are
 copied into the owner-only inbox without clobbering an existing file, review writes
