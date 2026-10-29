@@ -123,6 +123,12 @@ amounts to the nearest $5, and uses salted account references. Other presets, su
 as `full-local-audit`, retain transaction detail and belong in private local storage.
 Export creation does not authorize sharing or publication; all artifacts stay in private external storage.
 
+Detailed transaction exports use one label per account from its stored product
+label, falling back to its broad classification. Per-statement spelling variants
+do not rename exported rows. Missing account metadata leaves `account_type` blank
+with the existing `no_account_record` reference status. Exporting does not rewrite
+the labels retained on imported transactions.
+
 ## Dashboard
 
 ```bash
