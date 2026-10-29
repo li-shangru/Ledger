@@ -5,7 +5,7 @@ backend-path = ["scripts"]
 
 [project]
 name = "ledger"
-version = "1.11.2"
+version = "1.11.3"
 description = "Personal finance ledger with multi-institution support"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"

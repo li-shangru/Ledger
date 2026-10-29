@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from decimal import Decimal
 from pathlib import Path
 
@@ -124,6 +125,10 @@ def _isolated_config(
             "ledger": {
                 "command": str(ledger_command),
                 "args": ["--db", str(ledger_db)],
+                "env": {
+                    "LEDGER_HOME": str(tmp_path / "ledger-runtime"),
+                    "LEDGER_ADAPTER_CONFIG": str(tmp_path / "no-adapters.json"),
+                },
             },
             "memory": {
                 "command": str(memory_python),
@@ -145,6 +150,7 @@ def _parameters(config: dict[str, object], name: str) -> StdioServerParameters:
     return StdioServerParameters(  # type: ignore[arg-type]
         command=server["command"],
         args=server["args"],
+        env=server.get("env"),
     )
 
 
@@ -199,7 +205,41 @@ def _mcp_overrides(
         }
         for key, value in settings.items():
             overrides.extend(["-c", f"mcp_servers.{name}.{key}={_toml(value)}"])
+        for key, value in server.get("env", {}).items():  # type: ignore[union-attr]
+            overrides.extend(["-c", f"mcp_servers.{name}.env.{key}={_toml(value)}"])
     return overrides
+
+
+@pytest.mark.parametrize("ledger_required", [False, True])
+def test_fresh_agent_mcp_overrides_preserve_synthetic_server_environment(
+    tmp_path: Path, ledger_required: bool
+) -> None:
+    environment = {
+        "LEDGER_HOME": str(tmp_path / "isolated runtime"),
+        "LEDGER_ADAPTER_CONFIG": str(tmp_path / "no-adapters.json"),
+    }
+    config = {
+        "mcpServers": {
+            "memory": {"command": "synthetic-memory", "args": []},
+            "ledger": {
+                "command": "synthetic-ledger",
+                "args": ["--db", str(tmp_path / "ledger.db")],
+                "env": environment,
+            },
+        }
+    }
+
+    overrides = _mcp_overrides(config, ledger_required=ledger_required)
+    environment_paths = {
+        override.split("=", 1)[0] for override in overrides[1::2] if ".env." in override
+    }
+    assert environment_paths == {
+        "mcp_servers.ledger.env.LEDGER_HOME",
+        "mcp_servers.ledger.env.LEDGER_ADAPTER_CONFIG",
+    }
+    parsed = tomllib.loads("\n".join(overrides[1::2]))
+
+    assert parsed["mcp_servers"]["ledger"]["env"] == environment
 
 
 def _fresh_agent_schema(*, ledger_available: bool) -> dict[str, object]:
@@ -370,7 +410,14 @@ def test_actual_ledger_stdio_lists_every_published_tool_including_net_worth(
     command = Path(sys.executable).with_name("ledger-mcp")
 
     async def exercise() -> list[str]:
-        parameters = StdioServerParameters(command=str(command), args=["--db", str(ledger_db)])
+        parameters = StdioServerParameters(
+            command=str(command),
+            args=["--db", str(ledger_db)],
+            env={
+                "LEDGER_HOME": str(tmp_path / "ledger-runtime"),
+                "LEDGER_ADAPTER_CONFIG": str(tmp_path / "no-adapters.json"),
+            },
+        )
         async with Client(stdio_client(parameters), mode="auto") as client:
             listing = await client.list_tools()
             return [tool.name for tool in listing.tools]

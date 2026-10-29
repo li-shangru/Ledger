@@ -43,7 +43,7 @@ def _statement_date_from_csv_path(csv_path: Path) -> date | None:
     return date(year, month, 1)
 
 
-def _manifest_entries(manifest_path: Path) -> list[dict]:
+def _manifest_entries(manifest_path: Path, *, source_files: list[Path] | None = None) -> list[dict]:
     """Return the extraction manifest's dict entries, or [] for anything unusable.
 
     A missing, unreadable, corrupt or non-list manifest degrades to "nothing to
@@ -59,13 +59,25 @@ def _manifest_entries(manifest_path: Path) -> list[dict]:
         return []
     if not isinstance(entries, list):
         return []
-    return [entry for entry in entries if isinstance(entry, dict)]
+    admitted = [entry for entry in entries if isinstance(entry, dict)]
+    if source_files is None:
+        return admitted
+    approved = {path.resolve() for path in source_files}
+    return [
+        entry
+        for entry in admitted
+        if isinstance(entry.get("csv_path"), str)
+        and entry["csv_path"]
+        and Path(entry["csv_path"]).resolve() in approved
+    ]
 
 
 def persist_printed_credit_limits(
     db_path: Path,
     manifest_path: Path,
     account_aliases: dict[str, str] | None = None,
+    *,
+    source_files: list[Path] | None = None,
 ) -> int:
     """Read printed credit limits from the extraction manifest into the DB.
 
@@ -85,7 +97,7 @@ def persist_printed_credit_limits(
     is silently dropped to the deepest-balance estimate.
     """
     stored = 0
-    for entry in _manifest_entries(manifest_path):
+    for entry in _manifest_entries(manifest_path, source_files=source_files):
         csv_path_str = entry.get("csv_path") or ""
         if not csv_path_str:
             continue
@@ -128,15 +140,16 @@ def persist_statement_coverage(
     db_path: Path,
     manifest_path: Path,
     account_aliases: dict[str, str] | None = None,
+    *,
+    source_files: list[Path] | None = None,
 ) -> int:
     """Record one ``statement_coverage`` row per account-month in the extraction manifest.
 
-    Unlike persist_printed_credit_limits above, entries with NO csv_path are the whole
-    point: finalize drops every item carrying a ``skipped_reason``, so a statement that
-    yielded zero transactions leaves nothing behind and "imported, no activity" becomes
-    indistinguishable from "never imported". Only the two primary-key parts can't be
-    guessed, so an entry is skipped only when it has no usable account_slug or no
-    period (an unsupported or investment-delegated statement has neither).
+    Zero-row statements need explicit coverage to distinguish "imported, no
+    activity" from "never imported". Staged imports pass ``source_files`` to
+    admit only approved CSV sources, including accepted header-only files.
+    Direct legacy/repair callers can retain entries without a CSV path; their
+    account_slug and period must still be present rather than inferred.
 
     Entries are aggregated per (account_slug, period): ``row_count`` sums and
     ``statement_count`` counts, because a month can legitimately be covered by more
@@ -153,8 +166,11 @@ def persist_statement_coverage(
     names the account the transactions actually landed under. Without it, a configured
     alias makes coverage describe an account slug that holds no rows.
     """
+    # Staged imports supply their pinned source allowlist. Excluded statements
+    # must not overwrite monthly coverage or remove existing precise intervals.
+    # The optional boundary preserves direct legacy/repair callers' manifests.
     coverage: dict[tuple[str, str], _CoverageAggregate] = {}
-    entries = _manifest_entries(manifest_path)
+    entries = _manifest_entries(manifest_path, source_files=source_files)
     for entry in entries:
         raw_slug = entry.get("account_slug")
         if not isinstance(raw_slug, str) or not raw_slug.strip():

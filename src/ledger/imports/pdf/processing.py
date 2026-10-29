@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ledger.config import load_app_config, load_ledger_config
 from ledger.config.repository import load_runtime_app_config
-from ledger.imports.pdf.files import write_json
+from ledger.imports.pdf.files import read_json, write_json
 from ledger.imports.pdf.paths import Paths
 from ledger.processing import ProcessingResult
 from ledger.storage.database import (
@@ -42,7 +43,46 @@ def load_config(paths: Paths, runtime_db: Path | None = None):
     )
 
 
-def validate_processing_result(result: ProcessingResult, report_path: Path) -> None:
+def is_no_activity_statement(entry: dict[str, Any]) -> bool:
+    """Require complete, validated extraction evidence before accepting zero rows."""
+    if (
+        entry.get("skipped_reason") != "no_transactions_extracted"
+        or type(entry.get("transaction_count")) is not int
+        or entry["transaction_count"] != 0
+        or entry.get("validation_errors")
+        or entry.get("coverage_basis") != "printed_statement_period"
+        or any(
+            not isinstance(entry.get(key), str) or not entry[key].strip()
+            for key in ("csv_path", "processed_pdf", "account_slug", "institution")
+        )
+    ):
+        return False
+    try:
+        start = date.fromisoformat(entry["coverage_start_date"])
+        end = date.fromisoformat(entry["coverage_end_date"])
+    except KeyError, TypeError, ValueError:
+        return False
+    return 0 <= (end - start).days <= 62 and end.strftime("%Y-%m") == entry.get("period")
+
+
+def no_activity_only_import(manifest_path: Path, source_files: list[Path]) -> bool:
+    """Check the pinned extraction manifest against every approved CSV source."""
+    if not source_files or not manifest_path.is_file():
+        return False
+    entries = read_json(manifest_path)
+    if not isinstance(entries, list):
+        return False
+    empty_sources = {
+        Path(entry["csv_path"]).resolve()
+        for entry in entries
+        if isinstance(entry, dict) and is_no_activity_statement(entry)
+    }
+    return {path.resolve() for path in source_files} == empty_sources
+
+
+def validate_processing_result(
+    result: ProcessingResult, report_path: Path, *, allow_no_activity: bool = False
+) -> None:
     if result.exceptions:
         payload = [exc.model_dump(mode="json") for exc in result.exceptions]
         write_json(report_path, payload)
@@ -50,7 +90,7 @@ def validate_processing_result(result: ProcessingResult, report_path: Path) -> N
             f"Import produced {len(result.exceptions)} parse exceptions: {report_path}"
         )
 
-    if result.total_scanned == 0:
+    if result.total_scanned == 0 and not allow_no_activity:
         raise SystemExit("Import produced zero scanned rows; refusing to write database.")
 
 

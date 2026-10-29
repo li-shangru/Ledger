@@ -35,7 +35,7 @@ Example:
     >>> print(f"Processed {len(result.transactions)} transactions")
 """
 
-__version__ = "1.11.2"
+__version__ = "1.11.3"
 __author__ = "Shangru Li"
 
 # Re-export commonly used items

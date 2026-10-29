@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 import re
 import zipfile
 from datetime import UTC, date, datetime
@@ -13,12 +14,135 @@ from account_fixtures import seed_account
 
 from ledger.exporting import ExportPackageService
 from ledger.storage.database import (
+    AccountDB,
     ExportRunDB,
     RecurringPatternDB,
     TransactionDB,
     init_database,
     session_scope,
 )
+
+
+def _detailed_rows(path: Path, export_format: str) -> list[dict]:
+    if export_format == "zip":
+        with zipfile.ZipFile(path) as archive:
+            return [json.loads(line) for line in archive.read("transactions.jsonl").splitlines()]
+    if export_format == "jsonl":
+        return [json.loads(line) for line in path.read_text().splitlines()]
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+@pytest.mark.parametrize("export_format", ["csv", "jsonl", "zip"])
+def test_detailed_export_uses_canonical_product_labels_without_changing_facts(
+    tmp_path: Path, export_format: str
+) -> None:
+    db = tmp_path / "ledger.db"
+    init_database(db)
+    variants = ("Harbor Orbit Visa", "Harbor Orbit Visaj", "Harbor Orbit Visa Terms And Conditions")
+    for index, label in enumerate(variants):
+        _insert_transaction(
+            db,
+            f"orbit-{index}",
+            account="fictional-orbit",
+            account_type=label,
+            amount=Decimal("12.34"),
+            currency="EUR",
+        )
+    _insert_transaction(db, "summit-0", account="fictional-summit", account_type="Parser Suffixj")
+    with session_scope(db) as session:
+        for account in session.query(AccountDB).all():
+            account.account_type = "credit_card"
+            account.account_subtype = (
+                "Harbor Orbit Visa"
+                if account.account_number == "fictional-orbit"
+                else "Harbor Summit Visa"
+            )
+        before = [
+            (row.txn_id, row.account_type, row.amount_signed)
+            for row in session.query(TransactionDB).all()
+        ]
+
+    result = ExportPackageService(db).create_package(
+        dest_dir=tmp_path / "exports", preset="full-local-audit", export_format=export_format
+    )
+    rows = _detailed_rows(result.path, export_format)
+    orbit = [row for row in rows if row["txn_id"].startswith("orbit-")]
+    summit = next(row for row in rows if row["txn_id"] == "summit-0")
+
+    assert result.rows_exported == len(rows) == 4
+    assert {row["account_type"] for row in orbit} == {"Harbor Orbit Visa"}
+    assert summit["account_type"] == "Harbor Summit Visa"
+    assert len({row["account_ref"] for row in orbit}) == 1
+    assert summit["account_ref"] != orbit[0]["account_ref"]
+    assert all(row["account_ref_status"] == "resolved" for row in rows)
+    assert all(Decimal(str(row["amount"])) == Decimal("-12.34") for row in orbit)
+    assert {row["currency"] for row in orbit} == {"EUR"}
+    assert {row["date"] for row in rows} == {"2026-05-01"}
+    with session_scope(db) as session:
+        after = [
+            (row.txn_id, row.account_type, row.amount_signed)
+            for row in session.query(TransactionDB).all()
+        ]
+        assert after == before
+        assert {row.account_subtype for row in session.query(AccountDB).all()} == {
+            "Harbor Orbit Visa",
+            "Harbor Summit Visa",
+        }
+
+
+@pytest.mark.parametrize("subtype", ["", "   "])
+def test_export_missing_product_label_falls_back_to_canonical_classification(
+    tmp_path: Path, subtype: str
+) -> None:
+    db = tmp_path / "ledger.db"
+    init_database(db)
+    _insert_transaction(db, account_type="Unreliable Productj")
+    with session_scope(db) as session:
+        account = session.query(AccountDB).one()
+        account.account_type = "credit_card"
+        account.account_subtype = subtype
+    result = ExportPackageService(db).create_package(
+        dest_dir=tmp_path / "exports", preset="full-local-audit", export_format="jsonl"
+    )
+    assert _detailed_rows(result.path, "jsonl")[0]["account_type"] == "credit_card"
+
+
+def test_export_without_account_metadata_does_not_guess_a_product_label(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    init_database(db)
+    _insert_transaction(db, "orphan-1", account_type="Unreliable Productj")
+    _insert_transaction(db, "orphan-2", account_type="Unreliable Product Terms")
+    with session_scope(db) as session:
+        session.query(AccountDB).delete()
+    result = ExportPackageService(db).create_package(
+        dest_dir=tmp_path / "exports", preset="full-local-audit", export_format="jsonl"
+    )
+    rows = _detailed_rows(result.path, "jsonl")
+    assert {row["account_type"] for row in rows} == {""}
+    assert {row["account_ref_status"] for row in rows} == {"no_account_record"}
+    assert len({row["account_ref"] for row in rows}) == 1
+
+
+def test_reused_export_service_refreshes_canonical_account_metadata(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    init_database(db)
+    _insert_transaction(db, account_type="Original Product")
+    service = ExportPackageService(db)
+    first = service.create_package(
+        dest_dir=tmp_path / "first", preset="full-local-audit", export_format="jsonl"
+    )
+    before = _detailed_rows(first.path, "jsonl")[0]
+    with session_scope(db) as session:
+        account = session.query(AccountDB).one()
+        account.account_subtype = "Current Product"
+    second = service.create_package(
+        dest_dir=tmp_path / "second", preset="full-local-audit", export_format="jsonl"
+    )
+    after = _detailed_rows(second.path, "jsonl")[0]
+    assert before["account_type"] == "Original Product"
+    assert after == {**before, "account_type": "Current Product"}
+
 
 # Distinctive PII used across redaction assertions. These strings must never
 # appear in any chatgpt-safe artifact.

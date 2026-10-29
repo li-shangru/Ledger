@@ -79,6 +79,7 @@ class ExportPackageService:
         self._salt: str | None = None
         self._account_refs: dict[str, str] | None = None
         self._account_refs_by_id: dict[str, str] | None = None
+        self._account_labels: dict[str, str] | None = None
         init_database(self.db_path)
 
     def create_package(
@@ -101,6 +102,9 @@ class ExportPackageService:
             raise ValueError("format must be zip, csv, jsonl, or parquet")
 
         ensure_private_dir(dest_dir)
+        self._account_refs = None
+        self._account_refs_by_id = None
+        self._account_labels = None
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         stem = f"ledger-{preset}-{timestamp}"
 
@@ -379,7 +383,7 @@ class ExportPackageService:
     def _safe_transaction(self, row: TransactionDB) -> dict[str, Any]:
         institution = str(row.institution or "")
         account = str(row.account or "")
-        account_type = str(row.account_type or "")
+        account_type = self._account_labels_by_slug().get(account, "")
         account_ref, account_ref_status = self._account_ref(account)
         return {
             "txn_id": row.txn_id,
@@ -433,6 +437,25 @@ class ExportPackageService:
                 self._account_refs = account_ref_map(session, self._account_salt())
         return self._account_refs
 
+    def _account_labels_by_slug(self) -> dict[str, str]:
+        """Use one stored product label per account, falling back to its classification.
+
+        Transaction labels are untrusted per-statement spellings. Missing account
+        metadata stays blank and is explained by the existing account_ref_status.
+        """
+        if self._account_labels is None:
+            with session_scope(self.db_path) as session:
+                rows = session.query(
+                    AccountDB.account_number,
+                    AccountDB.account_subtype,
+                    AccountDB.account_type,
+                ).all()
+            self._account_labels = {
+                str(number): str(subtype or "").strip() or str(kind or "").strip()
+                for number, subtype, kind in rows
+            }
+        return self._account_labels
+
     def _account_ref(self, account: str) -> tuple[str, str]:
         """Opaque account reference and the status that explains it.
 
@@ -447,9 +470,9 @@ class ExportPackageService:
         account_ref instead of the raw account number. The ref is stable within a
         DB but differs across DBs, so it cannot be correlated by third parties. It
         is not, on its own, a promise that no account identifier reaches the file:
-        a parser can write the account slug into ``transactions.account_type``,
-        and `_safe_transaction` emits that column verbatim. The ref replaces the
-        ACCOUNT NUMBER column; it does not sanitise account_type.
+        the descriptive account_type uses the canonical account's stored product
+        label or classification. That metadata can still contain private text.
+        The ref replaces the ACCOUNT NUMBER column; it does not sanitise labels.
 
         A slug the dimension has no row for gets a sentinel in a visibly different
         namespace (``unresolved-…``, never ``acct-…``) plus the status

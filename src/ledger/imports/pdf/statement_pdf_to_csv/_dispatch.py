@@ -297,7 +297,7 @@ def process_pdf(
         "coverage_end_date": bounds[1].isoformat() if complete and bounds else "",
         "coverage_basis": "printed_statement_period" if complete else "",
     }
-    if not facts.rows:
+    if not facts.rows and not complete:
         return ExtractedCsv(
             pdf_path, None, None, statement_type, 0, "no_transactions_extracted", **extra
         )
@@ -311,4 +311,14 @@ def process_pdf(
         processed_dir, statement_type, facts.account_type, facts.account_number, facts.period
     )
     archived = move_pdf(pdf_path, archive_target, dry_run) if archive_pdf else archive_target
-    return ExtractedCsv(pdf_path, csv_path, archived, statement_type, len(facts.rows), **extra)
+    # A complete no-activity statement still has an approved source and archive
+    # identity. Its temporary CSV contains only headers, never an invented row.
+    return ExtractedCsv(
+        pdf_path,
+        csv_path,
+        archived,
+        statement_type,
+        len(facts.rows),
+        "no_transactions_extracted" if not facts.rows else "",
+        **extra,
+    )
