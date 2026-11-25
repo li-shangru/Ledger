@@ -5,6 +5,9 @@ private runtime. Contributors should read [Contributing](contributing.md) and
 [AGENTS.md](../AGENTS.md). Financial coverage and account state come from authorized
 Ledger evidence, never from these documents.
 
+For the repository entry points, see the [specification](spec.md), [status](status.md),
+[decisions](decisions/README.md), and [repository knowledge](knowledge.md).
+
 ## Task map
 
 | Need | Read first |

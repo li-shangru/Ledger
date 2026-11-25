@@ -78,6 +78,19 @@ existing guarded local recovery command for an authorized recovery; never delete
 journals or bypass locks, pinned identity, open-import gates, revisions, or receipts.
 Preserve append-only schedule history and conditional undo of the affected records.
 
+## Documents
+
+- [AGENTS.md](AGENTS.md) is the contributor guide and task map.
+- [Specification](docs/spec.md) points to Ledger’s product and architecture contracts.
+- [Status](docs/status.md) records the current public source state.
+- [Decisions](docs/decisions/README.md) explains where to record decisions and their rationale.
+- [Repository knowledge](docs/knowledge.md) is where Ledger-specific lessons go. Record
+  lessons used by two or more projects in the maintainer’s Atelier shared knowledge.
+
+Quick tests depend on the change. For CSV profiles and adapters, run
+`.venv/bin/pytest tests/test_csv_profiles.py tests/test_import_adapters.py`.
+The full source suite is `LEDGER_FREEZE_SYNTHETIC=1 LEDGER_FREEZE_SOURCE_ONLY=1 ./scripts/freeze-check`.
+
 ## Task routing
 
 Use the [documentation index](docs/README.md) for the full task map and document
