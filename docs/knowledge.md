@@ -5,8 +5,8 @@ outside source checkouts and use the separate delivery checks for installed
 clients. See [Development](agent/development.md), [Contributing](contributing.md),
 and [Local delivery](agent/delivery.md).
 
-The [factory knowledge folder](agent/factory/knowledge/) holds Ledger’s domain
-guides. Start with the guide closest to the change.
+The [factory catalog](agent/factory/catalog.json) indexes Ledger’s knowledge packs.
+Start with the guide closest to the change.
 
 - [Exact arithmetic](agent/factory/knowledge/exact-arithmetic.md)
 - [Statement ingestion](agent/factory/knowledge/statement-ingestion.md)
