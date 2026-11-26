@@ -89,7 +89,9 @@ Preserve append-only schedule history and conditional undo of the affected recor
 
 Quick tests depend on the change. For CSV profiles and adapters, run
 `.venv/bin/pytest tests/test_csv_profiles.py tests/test_import_adapters.py`.
-The full source suite is `LEDGER_FREEZE_SYNTHETIC=1 LEDGER_FREEZE_SOURCE_ONLY=1 ./scripts/freeze-check`.
+Run the source suite with `LEDGER_FREEZE_SYNTHETIC=1 LEDGER_FREEZE_SOURCE_ONLY=1 ./scripts/freeze-check`.
+For dashboard changes and full source release verification, add `LEDGER_FREEZE_UI=1`
+and set `PORT` to an available port to include the UI smoke test.
 
 ## Task routing
 
